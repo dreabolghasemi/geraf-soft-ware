@@ -18,11 +18,11 @@
   <meta name="msapplication-TileColor" content="#0f172a">
   <meta name="msapplication-tap-highlight" content="no">
 
-  <link rel="manifest" href="/manifest.json?v=5">
-  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png?v=5">
-  <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png?v=5">
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=5">
-  <link rel="shortcut icon" href="/app-logo.png?v=5">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 
   <script>
     // دریافت و نگهداری زودهنگام رویداد نصب PWA در اندروید و کروم
@@ -469,10 +469,10 @@
   <header class="sticky top-0 z-40 bg-slate-900/95 backdrop-blur-md border-b border-slate-800 shadow-xl px-4 py-3">
     <div class="max-w-4xl mx-auto flex items-center justify-between gap-2">
       
-      <!-- عنوان و لوگوی سیستم (استفاده مستقیم از تصویر ارسالی در سربرگ) -->
+      <!-- عنوان و لوگوی سیستم (درخواست ۳ کاربر) -->
       <div class="flex items-center gap-3">
-        <div class="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-slate-950 p-1 shadow-xl shadow-black/80 flex items-center justify-center shrink-0 border border-slate-700/80 overflow-hidden ring-1 ring-amber-400/20">
-          <img src="/app-logo.png?v=5" class="w-full h-full object-contain filter drop-shadow-md" alt="لوگوی سیستم">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-amber-700 p-0.5 shadow-lg shadow-amber-500/30 flex items-center justify-center shrink-0 border border-amber-400/40 overflow-hidden">
+          <img src="/icon-192.png" class="w-full h-full rounded-[10px] object-cover" alt="لوگو">
         </div>
         <div>
           <h1 class="text-base sm:text-lg font-black text-white tracking-tight flex items-center gap-1.5" style="text-shadow: 0 2px 4px rgba(0, 0, 0, 0.85), 0 0 10px rgba(245, 158, 11, 0.3);">
@@ -770,24 +770,15 @@
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
             <span>همکاران همراه در این فعالیت</span>
           </h2>
-          <span class="text-[11px] text-slate-400">جستجو و درج خودکار با شماره پرسنلی</span>
+          <span class="text-[11px] text-slate-400">شماره پرسنلی نفرات تیم</span>
         </div>
 
-        <div class="space-y-1.5">
-          <div class="flex gap-2">
-            <input type="text" id="colleaguePersonnelInput" 
-                   placeholder="شماره پرسنلی همکار (مثال: 0410870 یا 0419800)" 
-                   oninput="handleColleagueInput(this.value)" 
-                   onkeydown="if(event.key==='Enter'){event.preventDefault();addColleague();}"
-                   class="flex-1 bg-slate-950 border border-slate-700 focus:border-amber-500 rounded-xl px-3.5 py-2 text-sm font-mono text-slate-100 outline-none">
-            <button type="button" onclick="addColleague()" class="px-4 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 active:scale-95 text-slate-950 font-bold rounded-xl text-xs sm:text-sm flex items-center gap-1.5 transition shadow">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-              <span>افزودن</span>
-            </button>
-          </div>
-
-          <!-- پیش‌نمایش زنده نام پرسنل در حال تایپ بر اساس فایل اکسل -->
-          <div id="colleagueMatchPreview" class="min-h-[20px] text-xs transition-all"></div>
+        <div class="flex gap-2">
+          <input type="text" id="colleaguePersonnelInput" placeholder="شماره پرسنلی همکار (مثال: 98112)" class="flex-1 bg-slate-950 border border-slate-700 focus:border-amber-500 rounded-xl px-3.5 py-2 text-sm font-mono text-slate-100 outline-none">
+          <button type="button" onclick="addColleague()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 active:bg-amber-600 active:text-slate-950 text-amber-400 font-bold border border-slate-700 rounded-xl text-xs sm:text-sm flex items-center gap-1.5 transition">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+            <span>افزودن</span>
+          </button>
         </div>
 
         <!-- فهرست همکاران افزوده شده -->
@@ -814,28 +805,22 @@
           <p class="text-[11px] text-slate-400">زمان دقیق لحظه‌ای همراه با رکورد در دیتابیس قفل می‌شود.</p>
         </div>
 
-        <!-- موقعیت جغرافیایی GPS (ثبت خودکار و بروزرسانی هر ۱۰ ثانیه) -->
-        <div class="bg-slate-900/90 rounded-2xl p-4 border border-slate-800 shadow-lg space-y-2.5">
+        <!-- موقعیت جغرافیایی GPS -->
+        <div class="bg-slate-900/90 rounded-2xl p-4 border border-slate-800 shadow-lg space-y-2">
           <div class="flex items-center justify-between text-xs text-slate-400 border-b border-slate-800 pb-2">
             <span class="font-bold text-amber-400 flex items-center gap-1.5">
-              <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-              موقعیت مکانی خودکار (GPS)
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+              موقعیت مکانی (GPS)
             </span>
-            <div class="flex items-center gap-2">
-              <span class="text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold flex items-center gap-1.5" title="موقعیت مکانی به صورت خودکار هر ۱۰ ثانیه به‌روزرسانی می‌شود">
-                <span id="gpsIndicator" class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                <span>بروزرسانی هر ۱۰ ثانیه</span>
-              </span>
-              <button type="button" onclick="updateGPSLocation(true)" class="text-[11px] text-blue-400 hover:text-blue-300 underline font-medium">بروزرسانی دستی</button>
+            <div class="flex items-center gap-1.5">
+              <span id="gpsIndicator" class="w-2.5 h-2.5 rounded-full bg-slate-500"></span>
+              <button type="button" onclick="updateGPSLocation()" class="text-[11px] text-blue-400 hover:text-blue-300 underline font-medium">بروزرسانی</button>
             </div>
           </div>
-          <div id="gpsStatusText" class="text-xs text-slate-200 font-medium flex items-center gap-1.5">
-            <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-            <span>در حال برقراری اتصال خودکار با ماهواره‌های GPS...</span>
-          </div>
-          <div class="flex items-center justify-between text-[11px] font-mono text-slate-400 pt-0.5">
+          <div id="gpsStatusText" class="text-xs text-slate-200 font-medium">در حال بررسی مختصات...</div>
+          <div class="flex items-center justify-between text-[11px] font-mono text-slate-400">
             <span id="gpsCoordsText">عرض: --- | طول: ---</span>
-            <button id="viewOnMapBtn" type="button" class="hidden text-blue-400 hover:underline font-sans font-medium text-xs">مشاهده روی نقشه</button>
+            <button id="viewOnMapBtn" type="button" class="hidden text-blue-400 hover:underline">نقشه</button>
           </div>
         </div>
 
@@ -1011,9 +996,6 @@
       </button>
       <button type="button" id="tabBtnBackup" onclick="showAdminTab('backup')" class="px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-1.5 transition">
         <span>پشتیبان‌گیری و بازنشانی</span>
-      </button>
-      <button type="button" id="tabBtnPersonnelManage" onclick="showAdminTab('personnelManage')" class="hidden px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-1.5 transition">
-        <span>پرسنل</span>
       </button>
     </div>
 
@@ -1298,14 +1280,6 @@
                     <span class="text-[10px] text-slate-400 mt-0.5">مشاهده تب، دانلود فایل پشتیبان کامل JSON و بازنشانی اطلاعات سیستم</span>
                   </div>
                 </label>
-
-                <label class="flex items-start gap-2.5 cursor-pointer select-none group p-2 rounded-lg bg-slate-900/40 hover:bg-slate-900/80 border border-slate-800/60 transition">
-                  <input type="checkbox" id="permPersonnelManage" class="mt-0.5 w-4 h-4 rounded border-slate-700 text-amber-500 focus:ring-amber-500/40 bg-slate-950 accent-amber-500 cursor-pointer">
-                  <div class="flex flex-col">
-                    <span class="text-xs font-bold text-slate-200 group-hover:text-amber-300 transition">ماژول «پرسنل» (بانک اطلاعات پرسنل اکسل)</span>
-                    <span class="text-[10px] text-slate-400 mt-0.5">دسترسی به مشاهده تب پرسنل، جستجو، افزودن پرسنل جدید و حذف رکوردها</span>
-                  </div>
-                </label>
               </div>
             </div>
 
@@ -1382,114 +1356,6 @@
         </div>
 
       </div>
-    </div>
-
-    <!-- تب ۴: ماژول پرسنل (بانک اطلاعات پرسنل استخراج‌شده از اکسل) -->
-    <div id="adminTabPersonnel" class="hidden space-y-4">
-      
-      <!-- هدر ماژول و کنترل‌های اقدام -->
-      <div class="bg-slate-900/90 rounded-2xl p-4 sm:p-5 border border-slate-800 shadow-xl space-y-4">
-        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
-          <div class="flex items-center gap-3">
-            <div class="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center shrink-0">
-              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"/></svg>
-            </div>
-            <div>
-              <h2 class="text-base font-black text-slate-100 flex items-center gap-2">
-                <span>بانک اطلاعات پرسنل</span>
-                <span id="personnelTotalBadge" class="text-xs bg-amber-500/20 text-amber-300 font-mono px-2 py-0.5 rounded-full border border-amber-500/30">۰ پرسنل</span>
-              </h2>
-              <p class="text-xs text-slate-400 mt-0.5">اطلاعات استخراج‌شده از فایل پرسنل.xlsx (شماره پرسنلی ستون A و نام پرسنل ستون B)</p>
-            </div>
-          </div>
-
-          <!-- دکمه‌های عملیات بالای صفحه -->
-          <div class="flex items-center gap-2">
-            <button type="button" onclick="toggleAddPersonnelForm()" class="px-3.5 py-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-bold rounded-xl text-xs flex items-center gap-1.5 transition shadow active:scale-95">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-              <span>افزودن پرسنل جدید</span>
-            </button>
-            <button type="button" onclick="confirmResetPersonnelData()" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-amber-300 border border-slate-700 rounded-xl text-xs flex items-center gap-1.5 transition" title="بازنشانی کامل داده‌های پرسنل از فایل اکسل اولیه">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
-              <span class="hidden sm:inline">بازنشانی به اکسل اولیه</span>
-            </button>
-          </div>
-        </div>
-
-        <!-- فرم بازشونده افزودن پرسنل جدید -->
-        <div id="addPersonnelFormContainer" class="hidden bg-slate-950/80 border border-amber-500/30 rounded-xl p-4 space-y-3">
-          <div class="flex items-center justify-between pb-1 border-b border-slate-800">
-            <span class="text-xs font-bold text-amber-400 flex items-center gap-1.5">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"/></svg>
-              ثبت اطلاعات پرسنل جدید در سامانه
-            </span>
-            <button type="button" onclick="toggleAddPersonnelForm(false)" class="text-slate-400 hover:text-slate-200 text-xs">بستن ✕</button>
-          </div>
-          <form id="newPersonnelForm" onsubmit="handleNewPersonnelSubmit(event)" class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div class="space-y-1">
-              <label for="newPersonnelCode" class="block text-xs font-bold text-slate-300">شماره پرسنلی (ستون A): <span class="text-red-400">*</span></label>
-              <input type="text" id="newPersonnelCode" required placeholder="مثال: 0410870 یا 98451" class="w-full bg-slate-900 border border-slate-700 focus:border-amber-500 rounded-xl px-3 py-2 text-xs font-mono text-slate-100 outline-none">
-            </div>
-            <div class="space-y-1">
-              <label for="newPersonnelName" class="block text-xs font-bold text-slate-300">نام و نام خانوادگی پرسنل (ستون B): <span class="text-red-400">*</span></label>
-              <input type="text" id="newPersonnelName" required placeholder="مثال: نادري آدرگاني, حميد, ابوالقاسم" class="w-full bg-slate-900 border border-slate-700 focus:border-amber-500 rounded-xl px-3 py-2 text-xs text-slate-100 outline-none">
-            </div>
-            <div class="sm:col-span-2 flex justify-end gap-2 pt-1">
-              <button type="button" onclick="toggleAddPersonnelForm(false)" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs transition">انصراف</button>
-              <button type="submit" class="px-5 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded-xl text-xs transition shadow">ثبت در بانک پرسنل</button>
-            </div>
-          </form>
-        </div>
-
-        <!-- نوار جستجو و فیلتر پرسنل -->
-        <div class="flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div class="relative w-full sm:w-80">
-            <input type="text" id="personnelSearchInput" oninput="onPersonnelSearchInput(this.value)" placeholder="جستجو (نام یا شماره پرسنلی)..." class="w-full bg-slate-950 border border-slate-700 focus:border-amber-500 rounded-xl pr-9 pl-8 py-2 text-xs text-slate-100 outline-none">
-            <svg class="w-4 h-4 text-slate-400 absolute right-3 top-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-            <button type="button" onclick="clearPersonnelSearch()" id="clearPersonnelSearchBtn" class="hidden absolute left-2.5 top-2.5 text-slate-400 hover:text-slate-200 text-xs">✕</button>
-          </div>
-
-          <div class="flex items-center gap-3 text-xs text-slate-400 w-full sm:w-auto justify-between sm:justify-end">
-            <span id="personnelFilterCountText">در حال بارگذاری اطلاعات پرسنل...</span>
-            <div class="flex items-center gap-1.5">
-              <span>تعداد در صفحه:</span>
-              <select id="personnelPageSizeSelect" onchange="onPersonnelPageSizeChange(this.value)" class="bg-slate-950 border border-slate-700 text-slate-200 text-xs rounded-lg px-2 py-1 outline-none">
-                <option value="25">۲۵</option>
-                <option value="50" selected>۵۰</option>
-                <option value="100">۱۰۰</option>
-                <option value="250">۲۵۰</option>
-              </select>
-            </div>
-          </div>
-        </div>
-
-        <!-- جدول پرسنل -->
-        <div class="overflow-x-auto rounded-xl border border-slate-800">
-          <table class="w-full text-right text-xs text-slate-300">
-            <thead class="bg-slate-950/80 text-slate-400 uppercase text-[11px] border-b border-slate-800">
-              <tr>
-                <th class="py-3 px-3 w-14 text-center">ردیف</th>
-                <th class="py-3 px-4 w-36">شماره پرسنلی (ستون A)</th>
-                <th class="py-3 px-4">نام و نام خانوادگی پرسنل (ستون B)</th>
-                <th class="py-3 px-4 w-28 text-center">عملیات</th>
-              </tr>
-            </thead>
-            <tbody id="personnelTableBody" class="divide-y divide-slate-800/60 font-sans">
-              <!-- ردیف‌های پرسنل توسط JS تزریق می‌شوند -->
-            </tbody>
-          </table>
-        </div>
-
-        <!-- صفحه‌بندی (Pagination) -->
-        <div id="personnelPaginationContainer" class="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2 text-xs text-slate-400">
-          <div id="personnelPaginationInfo">صفحه ۱ از ۱</div>
-          <div class="flex items-center gap-1" id="personnelPaginationControls">
-            <!-- دکمه‌های صفحه‌بندی -->
-          </div>
-        </div>
-
-      </div>
-
     </div>
 
   </section>
@@ -1685,8 +1551,8 @@
     <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-md p-5 space-y-4 text-slate-100 shadow-2xl">
       <div class="flex items-center justify-between border-b border-slate-800 pb-3">
         <div class="flex items-center gap-2.5">
-          <div class="w-10 h-10 rounded-xl bg-slate-950 p-1 flex items-center justify-center shrink-0 border border-slate-700">
-            <img src="/app-logo.png?v=5" class="w-8 h-8 rounded-lg object-contain" alt="لوگو">
+          <div class="w-10 h-10 rounded-xl bg-blue-600/20 text-blue-400 flex items-center justify-center shrink-0">
+            <img src="/icon-192.png" class="w-8 h-8 rounded-lg" alt="لوگو">
           </div>
           <div>
             <h3 class="text-sm font-bold text-white">نصب سامانه ثبت گراف (PWA)</h3>
@@ -1791,14 +1657,12 @@
       const canOrg = isAdmin || !!(user && user.permissions && user.permissions.orgManage);
       const canAdmin = isAdmin || !!(user && user.permissions && user.permissions.adminManage);
       const canBackup = isAdmin || !!(user && user.permissions && user.permissions.backup);
-      const canPersonnel = isAdmin || !!(user && user.permissions && user.permissions.personnelManage);
 
       if (tabName === 'orgManage' && !canOrg) tabName = 'reports';
       if (tabName === 'adminManage' && !canAdmin) tabName = 'reports';
       if (tabName === 'backup' && !canBackup) tabName = 'reports';
-      if (tabName === 'personnelManage' && !canPersonnel) tabName = 'reports';
 
-      const tabs = ['adminTabReports', 'adminTabOrg', 'adminTabManage', 'adminTabBackup', 'adminTabPersonnel'];
+      const tabs = ['adminTabReports', 'adminTabOrg', 'adminTabManage', 'adminTabBackup'];
       tabs.forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.classList.add('hidden');
@@ -1811,13 +1675,11 @@
       const btnOrg = document.getElementById('tabBtnOrgManage');
       const btnManage = document.getElementById('tabBtnAdminManage');
       const btnBackup = document.getElementById('tabBtnBackup');
-      const btnPersonnel = document.getElementById('tabBtnPersonnelManage');
 
       if (btnReports) btnReports.className = inactiveClass;
       if (btnOrg) btnOrg.className = inactiveClass;
       if (btnManage) btnManage.className = inactiveClass;
       if (btnBackup) btnBackup.className = inactiveClass;
-      if (btnPersonnel) btnPersonnel.className = inactiveClass;
 
       if (tabName === 'reports') {
         const el = document.getElementById('adminTabReports');
@@ -1836,11 +1698,6 @@
         const el = document.getElementById('adminTabBackup');
         if (el) el.classList.remove('hidden');
         if (btnBackup) btnBackup.className = activeClass;
-      } else if (tabName === 'personnelManage' && canPersonnel) {
-        const el = document.getElementById('adminTabPersonnel');
-        if (el) el.classList.remove('hidden');
-        if (btnPersonnel) btnPersonnel.className = activeClass;
-        if (typeof renderPersonnelTable === 'function') renderPersonnelTable();
       }
     }
 
@@ -1852,9 +1709,7 @@
     };
   </script>
 
-  <!-- بارگذاری اطلاعات اولیه پرسنل از فایل استخراج‌شده از اکسل -->
-  <script src="personnel-data.js?v=1"></script>
   <!-- بارگذاری هسته منطق، دیتابیس IndexedDB و عملیات PWA با شناسه نسخه -->
-  <script src="app.js?v=2.3.0"></script>
+  <script src="app.js?v=2.2.0"></script>
 </body>
 </html>

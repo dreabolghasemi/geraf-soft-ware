@@ -41,7 +41,7 @@ function getFormattedJalali(date = new Date()) {
 // ۲. مدیریت دیتابیس محلی (IndexedDB)
 // ==========================================
 const DB_NAME = 'AutomationGraphDB';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 function openDB() {
   return new Promise((resolve, reject) => {
@@ -60,6 +60,10 @@ function openDB() {
       if (!db.objectStoreNames.contains('admins')) {
         const adminStore = db.createObjectStore('admins', { keyPath: 'username' });
         adminStore.createIndex('username', 'username', { unique: true });
+      }
+      if (!db.objectStoreNames.contains('personnel')) {
+        const pStore = db.createObjectStore('personnel', { keyPath: 'code' });
+        pStore.createIndex('name', 'name', { unique: false });
       }
     };
   });
@@ -142,6 +146,65 @@ async function deleteAdminUser(username) {
   });
 }
 
+// عملیات بانک اطلاعات پرسنل در دیتابیس محلی IndexedDB
+async function getAllPersonnelFromDB() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('personnel', 'readonly');
+    const store = tx.objectStore('personnel');
+    const req = store.getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function savePersonnelRecordToDB(p) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('personnel', 'readwrite');
+    const store = tx.objectStore('personnel');
+    const req = store.put(p);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveMultiplePersonnelToDB(list) {
+  if (!list || !list.length) return;
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('personnel', 'readwrite');
+    const store = tx.objectStore('personnel');
+    for (let i = 0; i < list.length; i++) {
+      store.put(list[i]);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function deletePersonnelFromDB(code) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('personnel', 'readwrite');
+    const store = tx.objectStore('personnel');
+    const req = store.delete(String(code));
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function clearPersonnelDB() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('personnel', 'readwrite');
+    const store = tx.objectStore('personnel');
+    const req = store.clear();
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
 // ==========================================
 // ۳. وضعیت برنامه، پوسته (تم) و متغیرهای سراسری
 // ==========================================
@@ -150,8 +213,15 @@ window.AppState = {
   currentUser: null,
   operator: null,
   capturedImageBase64: null,
+  capturedImages: [], // پشتیبانی از چندین عکس
+  addedActivities: [], // پشتیبانی از افزودن چندین فعالیت پویا (دکمه ADD)
   currentLocation: { lat: null, lng: null, accuracy: null, timestamp: null },
   colleagues: [],
+  personnel: [], // بانک اطلاعات پرسنل اکسل (کد پرسنلی و نام)
+  personnelMap: new Map(), // مپ سریع بر اساس کد پرسنلی
+  personnelSearchQuery: '',
+  personnelCurrentPage: 1,
+  personnelPageSize: 50,
   deferredPrompt: null,
   selectedQrTargetField: null,
   activeCameraStream: null,
@@ -264,29 +334,33 @@ function saveOperatorProfile(e) {
 }
 
 // ==========================================
-// ۴. منطق فیلدهای شرطی نوار کشویی (Select)
+// ۴. منطق فیلدهای شرطی نوار کشویی (Select) و افزودن فعالیت (دکمه ADD)
 // ==========================================
 function handleActivityChange() {
   const select = document.getElementById('activityTypeSelect');
-  const val = select.value;
+  const val = select ? select.value : '';
 
   const equipIdGroup = document.getElementById('equipIdGroup');
   const settingsGroup = document.getElementById('settingsGroup');
   const footageGroup = document.getElementById('footageGroup');
+  const customGroup = document.getElementById('customActivityGroup');
 
   if (equipIdGroup) equipIdGroup.classList.add('hidden');
   if (settingsGroup) settingsGroup.classList.add('hidden');
   if (footageGroup) footageGroup.classList.add('hidden');
+  if (customGroup) customGroup.classList.add('hidden');
 
   const equipInput = document.getElementById('equipmentIdInput');
   const deviceTag = document.getElementById('deviceTagInput');
   const refTool = document.getElementById('referenceToolInput');
   const footage = document.getElementById('footageInput');
+  const customInput = document.getElementById('customActivityInput');
 
   if (equipInput) equipInput.required = false;
   if (deviceTag) deviceTag.required = false;
   if (refTool) refTool.required = false;
   if (footage) footage.required = false;
+  if (customInput) customInput.required = false;
 
   if (val === 'مونتاژ تجهیزات' || val === 'دمونتاژ تجهیزات') {
     if (equipIdGroup) {
@@ -304,30 +378,258 @@ function handleActivityChange() {
       footageGroup.classList.remove('hidden');
       if (footage) footage.required = true;
     }
+  } else if (val === 'سایر فعالیت‌ها') {
+    if (customGroup) {
+      customGroup.classList.remove('hidden');
+      if (customInput) {
+        customInput.required = true;
+        customInput.focus();
+      }
+    }
   }
 }
 
+function addSelectedActivity() {
+  const select = document.getElementById('activityTypeSelect');
+  let val = select ? select.value.trim() : '';
+
+  if (val === 'سایر فعالیت‌ها') {
+    const customInput = document.getElementById('customActivityInput');
+    const customVal = customInput ? customInput.value.trim() : '';
+    if (!customVal) {
+      showToast('لطفاً عنوان فعالیت سفارشی را وارد نمایید', 'error');
+      if (customInput) customInput.focus();
+      return;
+    }
+    val = customVal;
+  }
+
+  if (!val) {
+    showToast('لطفاً ابتدا نوع فعالیت را از لیست انتخاب فرمایید', 'warning');
+    if (select) select.focus();
+    return;
+  }
+
+  const conditionalFields = {};
+
+  if (val === 'مونتاژ تجهیزات' || val === 'دمونتاژ تجهیزات') {
+    const equipVal = document.getElementById('equipmentIdInput')?.value.trim();
+    if (!equipVal) {
+      showToast('لطفاً شماره شناسایی تجهیز را وارد فرمایید', 'error');
+      document.getElementById('equipmentIdInput')?.focus();
+      return;
+    }
+    conditionalFields.equipmentId = equipVal;
+  } else if (val === 'انجام تنظیمات حرفه‌ای') {
+    const devTag = document.getElementById('deviceTagInput')?.value.trim();
+    const refTool = document.getElementById('referenceToolInput')?.value.trim();
+    if (!devTag || !refTool) {
+      showToast('لطفاً هر دو فیلد شماره تجهیز و شماره مرجع را تکمیل فرمایید', 'error');
+      return;
+    }
+    conditionalFields.deviceTag = devTag;
+    conditionalFields.referenceTool = refTool;
+  } else if (val === 'انجام کابل‌کشی' || val === 'انجام کاندوئیت‌کاری') {
+    const footageVal = document.getElementById('footageInput')?.value.trim();
+    if (!footageVal) {
+      showToast('لطفاً متراژ را وارد فرمایید', 'error');
+      document.getElementById('footageInput')?.focus();
+      return;
+    }
+    conditionalFields.footage = footageVal;
+  }
+
+  if (!window.AppState.addedActivities) {
+    window.AppState.addedActivities = [];
+  }
+
+  // بررسی تکراری نبودن دقیق
+  const isDuplicate = window.AppState.addedActivities.some(
+    (a) => a.type === val && JSON.stringify(a.conditionalFields) === JSON.stringify(conditionalFields)
+  );
+  if (isDuplicate) {
+    showToast('این فعالیت با همین مشخصات قبلاً اضافه شده است', 'warning');
+    return;
+  }
+
+  const activityItem = {
+    id: Date.now() + Math.random().toString(36).substring(2, 6),
+    type: val,
+    conditionalFields
+  };
+
+  window.AppState.addedActivities.push(activityItem);
+
+  // پاکسازی ورودی‌های فیلدهای شرطی برای فعالیت بعدی
+  if (select) select.value = '';
+  const customInput = document.getElementById('customActivityInput');
+  if (customInput) customInput.value = '';
+  const equipInput = document.getElementById('equipmentIdInput');
+  if (equipInput) equipInput.value = '';
+  const devTagInput = document.getElementById('deviceTagInput');
+  if (devTagInput) devTagInput.value = '';
+  const refToolInput = document.getElementById('referenceToolInput');
+  if (refToolInput) refToolInput.value = '';
+  const footageInput = document.getElementById('footageInput');
+  if (footageInput) footageInput.value = '';
+
+  handleActivityChange();
+  renderAddedActivitiesList();
+  showToast(`فعالیت «${val}» با موفقیت افزوده شد.`, 'success');
+}
+
+function removeAddedActivity(id) {
+  if (!window.AppState.addedActivities) return;
+  window.AppState.addedActivities = window.AppState.addedActivities.filter((a) => a.id !== id);
+  renderAddedActivitiesList();
+  showToast('فعالیت مورد نظر حذف شد', 'info');
+}
+
+function renderAddedActivitiesList() {
+  const container = document.getElementById('addedActivitiesContainer');
+  const countBadge = document.getElementById('activitiesCountText');
+  if (!container) return;
+
+  const activities = window.AppState.addedActivities || [];
+
+  if (countBadge) {
+    countBadge.textContent = `${activities.length} مورد`;
+  }
+
+  if (activities.length === 0) {
+    container.innerHTML = `
+      <div id="emptyActivitiesNotice" class="text-xs text-slate-400 py-3 px-3 text-center bg-slate-950/40 rounded-xl border border-dashed border-slate-700/80">
+        فعالیتی به این گراف اضافه نشده است. پس از انتخاب اقدام از نوار بالا، دکمه <strong class="text-amber-400 font-bold">«افزودن فعالیت (ADD)»</strong> را بزنید.
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = '';
+  activities.forEach((act, index) => {
+    let detailPills = '';
+    if (act.conditionalFields) {
+      if (act.conditionalFields.footage) {
+        detailPills += `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-950/70 border border-emerald-600/50 text-[11px] font-bold text-emerald-300">متراژ: ${act.conditionalFields.footage} متر</span>`;
+      }
+      if (act.conditionalFields.equipmentId) {
+        detailPills += `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-amber-950/70 border border-amber-600/50 text-[11px] font-bold text-amber-300 font-mono">تجهیز: ${act.conditionalFields.equipmentId}</span>`;
+      }
+      if (act.conditionalFields.deviceTag) {
+        detailPills += `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-blue-950/70 border border-blue-600/50 text-[11px] font-bold text-blue-300 font-mono">تگ: ${act.conditionalFields.deviceTag}</span>`;
+      }
+      if (act.conditionalFields.referenceTool) {
+        detailPills += `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-blue-950/70 border border-blue-600/50 text-[11px] font-bold text-blue-300 font-mono">مرجع: ${act.conditionalFields.referenceTool}</span>`;
+      }
+    }
+
+    const itemEl = document.createElement('div');
+    itemEl.className = 'flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-950/90 border border-slate-700/90 shadow-sm hover:border-slate-600 transition';
+    itemEl.innerHTML = `
+      <div class="flex items-center gap-2.5 overflow-hidden">
+        <span class="w-6 h-6 rounded-lg bg-amber-500/20 text-amber-400 font-mono font-bold text-xs flex items-center justify-center shrink-0 border border-amber-500/30">
+          ${index + 1}
+        </span>
+        <div class="flex flex-wrap items-center gap-1.5 overflow-hidden">
+          <span class="text-xs sm:text-sm font-bold text-slate-100">${act.type}</span>
+          ${detailPills}
+        </div>
+      </div>
+      <button type="button" onclick="removeAddedActivity('${act.id}')" class="p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-950/40 rounded-lg transition shrink-0" title="حذف این فعالیت">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+      </button>
+    `;
+    container.appendChild(itemEl);
+  });
+}
+
+// انتشار سراسری در آبجکت window جهت اطمینان از دسترس‌پذیری در رویدادهای inline HTML
+window.handleActivityChange = handleActivityChange;
+window.addSelectedActivity = addSelectedActivity;
+window.removeAddedActivity = removeAddedActivity;
+window.renderAddedActivitiesList = renderAddedActivitiesList;
+
 // ==========================================
-// ۵. مدیریت همکاران همراه (Dynamic Colleagues)
+// ۵. مدیریت همکاران همراه (Dynamic Colleagues) با جستجو در بانک پرسنل اکسل
 // ==========================================
+function findPersonnelByCode(rawCode) {
+  if (!rawCode) return null;
+  const clean = String(rawCode).trim();
+  if (!clean) return null;
+
+  if (window.AppState.personnelMap && window.AppState.personnelMap.has(clean)) {
+    return window.AppState.personnelMap.get(clean);
+  }
+
+  // جستجو با ۷ رقم همراه با صفرهای پیشین (کدهای اکسل ۷ رقمی هستند: مثلا 0410870)
+  const padded = clean.padStart(7, '0');
+  if (window.AppState.personnelMap && window.AppState.personnelMap.has(padded)) {
+    return window.AppState.personnelMap.get(padded);
+  }
+
+  // جستجو بدون صفرهای پیشین
+  const unpadded = clean.replace(/^0+/, '');
+  if (unpadded && window.AppState.personnelMap && window.AppState.personnelMap.has(unpadded)) {
+    return window.AppState.personnelMap.get(unpadded);
+  }
+
+  return null;
+}
+
+function handleColleagueInput(val) {
+  const preview = document.getElementById('colleagueMatchPreview');
+  if (!preview) return;
+  const clean = (val || '').trim();
+  if (!clean) {
+    preview.innerHTML = '';
+    return;
+  }
+
+  const match = findPersonnelByCode(clean);
+  if (match) {
+    preview.innerHTML = `<span class="inline-flex items-center gap-1.5 text-emerald-400 font-bold bg-emerald-950/60 border border-emerald-800/80 px-2 py-0.5 rounded-lg"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span><span>پرسنل شناسایی شد: <strong>${escapeHtml(match.name)}</strong> (کد: ${escapeHtml(match.code)})</span></span>`;
+  } else {
+    preview.innerHTML = `<span class="text-slate-400 text-[11px]">شماره در بانک پرسنل یافت نشد (در صورت فشردن «افزودن»، با همین شماره ثبت می‌شود).</span>`;
+  }
+}
+
 function addColleague() {
   const input = document.getElementById('colleaguePersonnelInput');
+  if (!input) return;
   const val = input.value.trim();
   if (!val) {
     showToast('لطفاً شماره پرسنلی همکار را وارد کنید', 'error');
     return;
   }
-  if (window.AppState.colleagues.includes(val)) {
-    showToast('این شماره پرسنلی قبلاً افزوده شده است', 'warning');
+
+  const match = findPersonnelByCode(val);
+  const code = match ? match.code : val;
+  const name = match ? match.name : 'نامشخص';
+
+  // بررسی تکراری بودن بر اساس شماره پرسنلی
+  const isDuplicate = window.AppState.colleagues.some((c) => {
+    const cCode = typeof c === 'object' && c !== null ? c.code : c;
+    return String(cCode).trim() === String(code).trim();
+  });
+
+  if (isDuplicate) {
+    showToast('این شماره پرسنلی قبلاً به لیست همکاران افزوده شده است', 'warning');
     return;
   }
-  window.AppState.colleagues.push(val);
+
+  window.AppState.colleagues.push({ code, name });
   input.value = '';
+  const preview = document.getElementById('colleagueMatchPreview');
+  if (preview) preview.innerHTML = '';
   renderColleaguesList();
+  showToast(`همکار «${name}» (شماره پرسنلی: ${code}) افزوده شد`, 'success');
 }
 
 function removeColleague(code) {
-  window.AppState.colleagues = window.AppState.colleagues.filter((c) => c !== code);
+  window.AppState.colleagues = window.AppState.colleagues.filter((c) => {
+    const cCode = typeof c === 'object' && c !== null ? c.code : c;
+    return String(cCode) !== String(code);
+  });
   renderColleaguesList();
 }
 
@@ -335,84 +637,220 @@ function renderColleaguesList() {
   const container = document.getElementById('colleaguesListContainer');
   if (!container) return;
   container.innerHTML = '';
-  if (window.AppState.colleagues.length === 0) {
+  if (!window.AppState.colleagues || window.AppState.colleagues.length === 0) {
     container.innerHTML = '<span class="text-xs text-slate-400">همکاری ثبت نشده است.</span>';
     return;
   }
-  window.AppState.colleagues.forEach((code) => {
+
+  window.AppState.colleagues.forEach((item) => {
+    const code = typeof item === 'object' && item !== null ? item.code : item;
+    const name = typeof item === 'object' && item !== null ? item.name : '';
+
     const badge = document.createElement('div');
-    badge.className = 'inline-flex items-center gap-2 bg-slate-700/80 border border-slate-600 text-amber-300 px-3 py-1.5 rounded-lg text-sm font-mono';
+    badge.className = 'inline-flex items-center gap-2 bg-slate-800/90 border border-slate-700 hover:border-amber-500/50 text-slate-100 px-3 py-1.5 rounded-xl text-xs shadow transition';
     badge.innerHTML = `
-      <span>کد: ${code}</span>
-      <button type="button" onclick="removeColleague('${code}')" class="text-slate-400 hover:text-red-400 transition" title="حذف">
-        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+      <div class="flex items-center gap-1.5">
+        <span class="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_#34d399]"></span>
+        ${name && name !== 'نامشخص' ? `<span class="font-bold text-amber-300 font-sans">${escapeHtml(name)}</span>` : ''}
+        <span class="font-mono text-slate-300 text-[11px] bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">${escapeHtml(code)}</span>
+      </div>
+      <button type="button" onclick="removeColleague('${escapeHtml(code)}')" class="text-slate-400 hover:text-red-400 transition p-0.5 mr-0.5" title="حذف همکار">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
       </button>
     `;
     container.appendChild(badge);
   });
 }
 
+// بارگذاری بانک اطلاعات پرسنل (از IndexedDB یا فایل پرسنل اولیه اکسل)
+async function loadPersonnelData() {
+  try {
+    let records = await getAllPersonnelFromDB();
+    if (!records || records.length === 0) {
+      if (window.INITIAL_PERSONNEL_DATA && Array.isArray(window.INITIAL_PERSONNEL_DATA) && window.INITIAL_PERSONNEL_DATA.length > 0) {
+        records = window.INITIAL_PERSONNEL_DATA;
+      } else {
+        const res = await fetch('/personnel-data.json');
+        if (res.ok) {
+          records = await res.json();
+        }
+      }
+
+      if (records && records.length > 0) {
+        await saveMultiplePersonnelToDB(records);
+      }
+    }
+
+    window.AppState.personnel = records || [];
+    window.AppState.personnelMap = new Map();
+    (window.AppState.personnel || []).forEach((p) => {
+      if (p && p.code) {
+        const clean = String(p.code).trim();
+        window.AppState.personnelMap.set(clean, p);
+        const unpadded = clean.replace(/^0+/, '');
+        if (unpadded && unpadded !== clean) {
+          window.AppState.personnelMap.set(unpadded, p);
+        }
+        const padded7 = clean.padStart(7, '0');
+        if (padded7 !== clean) {
+          window.AppState.personnelMap.set(padded7, p);
+        }
+      }
+    });
+
+    const totalBadge = document.getElementById('personnelTotalBadge');
+    if (totalBadge) {
+      totalBadge.textContent = `${window.AppState.personnel.length.toLocaleString('fa-IR')} پرسنل`;
+    }
+  } catch (err) {
+    console.error('Error loading personnel data:', err);
+  }
+}
+
 // ==========================================
-// ۶. دریافت موقعیت مکانی (GPS)
+// ۶. دریافت و ثبت خودکار موقعیت مکانی (GPS) با بروزرسانی هر ۱۰ ثانیه
 // ==========================================
-function updateGPSLocation() {
+let gpsAutoUpdateInterval = null;
+let gpsWatchId = null;
+
+function applyGpsPosition(position) {
+  if (!position || !position.coords) return;
+  const lat = position.coords.latitude.toFixed(6);
+  const lng = position.coords.longitude.toFixed(6);
+  const accuracy = Math.round(position.coords.accuracy);
+  const now = new Date();
+  const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+
+  window.AppState.currentLocation = { 
+    lat, 
+    lng, 
+    accuracy, 
+    timestamp: now.toISOString(),
+    updatedAt: timeStr 
+  };
+
   const statusEl = document.getElementById('gpsStatusText');
   const coordsEl = document.getElementById('gpsCoordsText');
+  const indicator = document.getElementById('gpsIndicator');
+  const mapBtn = document.getElementById('viewOnMapBtn');
+
+  if (statusEl) {
+    statusEl.innerHTML = `<span class="inline-block w-2 h-2 rounded-full bg-emerald-400"></span><span class="text-emerald-300 font-bold">موقعیت خودکار قفل شد</span> • ساعت <span class="font-mono">${timeStr}</span> (دقت: ±${accuracy} متر)`;
+  }
+  if (coordsEl) {
+    coordsEl.textContent = `عرض: ${lat} | طول: ${lng}`;
+  }
+  if (indicator) {
+    indicator.className = 'w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]';
+  }
+  if (mapBtn) {
+    mapBtn.classList.remove('hidden');
+    mapBtn.onclick = () => window.open(`https://www.google.com/maps?q=${lat},${lng}`, '_blank');
+  }
+}
+
+function updateGPSLocation(isManual = false) {
+  const statusEl = document.getElementById('gpsStatusText');
   const indicator = document.getElementById('gpsIndicator');
 
   if (!navigator.geolocation) {
     if (statusEl) statusEl.textContent = 'دستگاه شما از GPS پشتیبانی نمی‌کند';
-    if (indicator) indicator.className = 'w-3 h-3 rounded-full bg-red-500';
+    if (indicator) indicator.className = 'w-2 h-2 rounded-full bg-red-500';
     return;
   }
 
-  if (statusEl) statusEl.textContent = 'در حال دریافت مختصات دقیق...';
-  if (indicator) indicator.className = 'w-3 h-3 rounded-full bg-amber-400 animate-ping';
+  if (isManual && !window.AppState.currentLocation?.lat) {
+    if (statusEl) statusEl.textContent = 'در حال دریافت خودکار مختصات دقیق...';
+    if (indicator) indicator.className = 'w-2 h-2 rounded-full bg-amber-400 animate-ping';
+  }
 
   navigator.geolocation.getCurrentPosition(
     (position) => {
-      const lat = position.coords.latitude.toFixed(6);
-      const lng = position.coords.longitude.toFixed(6);
-      const accuracy = Math.round(position.coords.accuracy);
-      const now = new Date();
-      const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-
-      window.AppState.currentLocation = { lat, lng, accuracy, timestamp: now.toISOString() };
-
-      if (statusEl) statusEl.textContent = `موقعیت به‌روز است (دقت: ±${accuracy} متر - ساعت ${timeStr})`;
-      if (coordsEl) coordsEl.textContent = `عرض: ${lat} | طول: ${lng}`;
-      if (indicator) indicator.className = 'w-3 h-3 rounded-full bg-emerald-500';
-
-      const mapBtn = document.getElementById('viewOnMapBtn');
-      if (mapBtn) {
-        mapBtn.classList.remove('hidden');
-        mapBtn.onclick = () => window.open(`https://www.google.com/maps?q=${lat},${lng}`, '_blank');
-      }
+      applyGpsPosition(position);
     },
     (err) => {
-      console.warn('Geolocation error:', err);
-      let msg = 'خطا در دریافت مختصات (مجوز مکان داده نشد یا GPS خاموش است)';
-      if (statusEl) statusEl.textContent = msg;
-      if (indicator) indicator.className = 'w-3 h-3 rounded-full bg-amber-500';
+      console.warn('Geolocation update note:', err);
+      if (!window.AppState.currentLocation?.lat) {
+        if (statusEl) statusEl.textContent = 'در حال مکان‌یابی خودکار ماهواره‌ای (دستور دسترسی مکان را در مرورگر تأیید نمایید)...';
+        if (indicator) indicator.className = 'w-2 h-2 rounded-full bg-amber-500 animate-pulse';
+      }
     },
-    { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
+    { enableHighAccuracy: true, timeout: 9000, maximumAge: 4000 }
   );
 }
 
+function startAutoGPS() {
+  // ۱. دریافت بلافاصله در ابتدای باز شدن برنامه
+  updateGPSLocation(true);
+
+  // ۲. گوش‌به‌زنگ بودن سنسور GPS دستگاه برای دریافت فوری کوچک‌ترین جابجایی
+  if (navigator.geolocation && navigator.geolocation.watchPosition) {
+    try {
+      if (gpsWatchId !== null) {
+        navigator.geolocation.clearWatch(gpsWatchId);
+      }
+      gpsWatchId = navigator.geolocation.watchPosition(
+        (pos) => applyGpsPosition(pos),
+        (err) => console.warn('GPS watchPosition note:', err),
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+      );
+    } catch (e) {
+      console.warn('GPS watch error:', e);
+    }
+  }
+
+  // ۳. حلقه منظم بروزرسانی خودکار هر ۱۰ ثانیه (دقیقاً بر اساس درخواست کاربر)
+  if (gpsAutoUpdateInterval) {
+    clearInterval(gpsAutoUpdateInterval);
+  }
+  gpsAutoUpdateInterval = setInterval(() => {
+    updateGPSLocation(false);
+  }, 10000);
+}
+
 // ==========================================
-// ۷. مدیریت دوربین و عکس‌برداری صنعتی
+// ۷. مدیریت دوربین و عکس‌برداری صنعتی (پشتیبانی از چندین عکس همزمان)
 // ==========================================
 function setupCameraInput() {
   const fileInput = document.getElementById('cameraFileInput');
   if (!fileInput) return;
 
-  fileInput.addEventListener('change', (e) => {
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
+  fileInput.addEventListener('change', async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
 
+    if (!window.AppState.capturedImages) {
+      window.AppState.capturedImages = [];
+    }
+
+    showToast(`در حال پردازش و برچسب‌گذاری ${files.length} تصویر...`, 'info');
+
+    for (const file of files) {
+      try {
+        const dataUrl = await processAndWatermarkImage(file);
+        window.AppState.capturedImages.push(dataUrl);
+      } catch (err) {
+        console.error('Error processing photo:', err);
+      }
+    }
+
+    if (window.AppState.capturedImages.length > 0) {
+      window.AppState.capturedImageBase64 = window.AppState.capturedImages[0];
+    }
+
+    fileInput.value = ''; // ریست برای امکان انتخاب/ثبت عکس‌های بیشتر
+    renderImagePreview();
+    showToast(`تعداد کل عکس‌های الحاق‌شده: ${window.AppState.capturedImages.length} تصویر`, 'success');
+  });
+}
+
+function processAndWatermarkImage(file) {
+  return new Promise((resolve, reject) => {
     const reader = new FileReader();
+    reader.onerror = reject;
     reader.onload = (event) => {
       const img = new Image();
+      img.onerror = reject;
       img.onload = () => {
         const canvas = document.createElement('canvas');
         const MAX_WIDTH = 1280;
@@ -422,12 +860,12 @@ function setupCameraInput() {
 
         if (width > height) {
           if (width > MAX_WIDTH) {
-            height *= MAX_WIDTH / width;
+            height = Math.round(height * (MAX_WIDTH / width));
             width = MAX_WIDTH;
           }
         } else {
           if (height > MAX_HEIGHT) {
-            width *= MAX_HEIGHT / height;
+            width = Math.round(width * (MAX_HEIGHT / height));
             height = MAX_HEIGHT;
           }
         }
@@ -436,18 +874,18 @@ function setupCameraInput() {
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, width, height);
 
-        ctx.fillStyle = 'rgba(15, 23, 42, 0.7)';
-        ctx.fillRect(0, height - 40, width, 40);
-        ctx.fillStyle = '#f59e0b';
-        ctx.font = '16px Tahoma, sans-serif';
+        // درج نوار رسمی و مُهر تاریخ و زمان شمسی
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
+        ctx.fillRect(0, height - 42, width, 42);
+        ctx.fillStyle = '#fbbf24';
+        ctx.font = 'bold 16px Vazirmatn, Tahoma, sans-serif';
         ctx.direction = 'rtl';
         const jalali = getFormattedJalali();
-        const stampText = `مدیریت اتوماسیون | ${jalali.fullPersian}`;
+        const stampText = `مدیریت اتوماسیون و ارتباطات | ${jalali.fullPersian}`;
         ctx.fillText(stampText, width - 20, height - 15);
 
         const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
-        window.AppState.capturedImageBase64 = dataUrl;
-        renderImagePreview();
+        resolve(dataUrl);
       };
       img.src = event.target.result;
     };
@@ -456,28 +894,134 @@ function setupCameraInput() {
 }
 
 function renderImagePreview() {
+  const galleryContainer = document.getElementById('photosGalleryContainer');
+  const photosGrid = document.getElementById('photosGrid');
+  const uploadPlaceholder = document.getElementById('cameraUploadPlaceholder');
+  const countBadge = document.getElementById('photosCountBadge');
+
   const previewContainer = document.getElementById('cameraPreviewContainer');
   const previewImg = document.getElementById('cameraPreviewImg');
-  const uploadPlaceholder = document.getElementById('cameraUploadPlaceholder');
 
-  if (window.AppState.capturedImageBase64) {
-    if (previewContainer) previewContainer.classList.remove('hidden');
-    if (previewImg) previewImg.src = window.AppState.capturedImageBase64;
+  const images = window.AppState.capturedImages || [];
+  if (images.length === 0 && window.AppState.capturedImageBase64) {
+    images.push(window.AppState.capturedImageBase64);
+    window.AppState.capturedImages = images;
+  }
+
+  if (countBadge) {
+    if (images.length > 0) {
+      countBadge.textContent = `${images.length} تصویر الحاق‌شده`;
+      countBadge.classList.remove('hidden');
+    } else {
+      countBadge.classList.add('hidden');
+    }
+  }
+
+  if (images.length > 0) {
+    if (galleryContainer) galleryContainer.classList.remove('hidden');
     if (uploadPlaceholder) uploadPlaceholder.classList.add('hidden');
+
+    if (photosGrid) {
+      photosGrid.innerHTML = '';
+      images.forEach((dataUrl, idx) => {
+        const photoCard = document.createElement('div');
+        photoCard.className = 'group relative rounded-xl overflow-hidden border border-slate-700 bg-slate-950 shadow-md hover:border-amber-500/80 transition aspect-square';
+        photoCard.innerHTML = `
+          <img src="${dataUrl}" alt="عکس ${idx + 1}" class="w-full h-full object-cover cursor-pointer group-hover:scale-105 transition duration-300" onclick="openPhotoViewerModal('${idx}')">
+          <div class="absolute inset-0 bg-slate-950/40 opacity-0 group-hover:opacity-100 transition pointer-events-none flex items-center justify-center">
+            <span class="p-2 bg-slate-900/80 rounded-full text-amber-400 shadow">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+            </span>
+          </div>
+          <div class="absolute top-2 right-2">
+            <span class="px-2 py-0.5 rounded-md bg-slate-900/85 backdrop-blur-sm text-[10px] font-mono font-bold text-amber-300 border border-slate-700/80 shadow">
+              #${idx + 1}
+            </span>
+          </div>
+          <div class="absolute bottom-1.5 left-1.5 right-1.5 flex justify-between items-center">
+            <button type="button" onclick="openPhotoViewerModal('${idx}')" class="px-2 py-0.5 bg-slate-900/85 hover:bg-slate-800 text-[11px] font-bold text-slate-200 rounded-md border border-slate-700 transition" title="بزرگ‌نمایی">
+              مشاهده
+            </button>
+            <button type="button" onclick="removeSinglePhoto(${idx})" class="p-1 bg-red-950/90 hover:bg-red-900 text-red-300 rounded-md border border-red-800 transition" title="حذف این عکس">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            </button>
+          </div>
+        `;
+        photosGrid.appendChild(photoCard);
+      });
+    }
+
+    // سازگاری با عناصر قدیمی
+    if (previewContainer) previewContainer.classList.remove('hidden');
+    if (previewImg) previewImg.src = images[0];
   } else {
+    if (galleryContainer) galleryContainer.classList.add('hidden');
+    if (uploadPlaceholder) uploadPlaceholder.classList.remove('hidden');
+    if (photosGrid) photosGrid.innerHTML = '';
     if (previewContainer) previewContainer.classList.add('hidden');
     if (previewImg) previewImg.src = '';
-    if (uploadPlaceholder) uploadPlaceholder.classList.remove('hidden');
   }
 }
 
-function removeCapturedImage() {
+function removeSinglePhoto(index) {
+  if (!window.AppState.capturedImages) return;
+  window.AppState.capturedImages.splice(index, 1);
+  window.AppState.capturedImageBase64 = window.AppState.capturedImages.length > 0 ? window.AppState.capturedImages[0] : null;
+  renderImagePreview();
+  showToast('عکس مورد نظر حذف شد', 'info');
+}
+
+function removeAllCapturedPhotos() {
+  window.AppState.capturedImages = [];
   window.AppState.capturedImageBase64 = null;
   const fileInput = document.getElementById('cameraFileInput');
   if (fileInput) fileInput.value = '';
   renderImagePreview();
-  showToast('تصویر با موفقیت حذف شد', 'info');
+  showToast('تمام عکس‌های الحاق‌شده حذف شدند', 'info');
 }
+
+function removeCapturedImage() {
+  removeAllCapturedPhotos();
+}
+
+function openPhotoViewerModal(target) {
+  let src = '';
+  let indexStr = '';
+  if (typeof target === 'number' || (!isNaN(target) && typeof target === 'string' && !target.startsWith('data:'))) {
+    const idx = parseInt(target, 10);
+    const images = window.AppState.capturedImages || [];
+    src = images[idx] || '';
+    indexStr = `تصویر شماره ${idx + 1} از ${images.length}`;
+  } else {
+    src = target;
+    indexStr = 'تصویر تجهیز و محیط کار';
+  }
+
+  const modal = document.getElementById('photoViewerModal');
+  const img = document.getElementById('photoViewerImg');
+  const info = document.getElementById('photoViewerInfo');
+
+  if (modal && img && src) {
+    img.src = src;
+    if (info) info.textContent = indexStr;
+    modal.classList.remove('hidden');
+  }
+}
+
+function closePhotoViewerModal() {
+  const modal = document.getElementById('photoViewerModal');
+  const img = document.getElementById('photoViewerImg');
+  if (modal) modal.classList.add('hidden');
+  if (img) img.src = '';
+}
+
+// انتشار سراسری توابع مدیریت عکس‌ها در window
+window.renderImagePreview = renderImagePreview;
+window.removeSinglePhoto = removeSinglePhoto;
+window.removeAllCapturedPhotos = removeAllCapturedPhotos;
+window.removeCapturedImage = removeCapturedImage;
+window.openPhotoViewerModal = openPhotoViewerModal;
+window.closePhotoViewerModal = closePhotoViewerModal;
 
 // ==========================================
 // ۸. اسکن بارکد و QR Code
@@ -487,7 +1031,7 @@ function openQrScannerModal(targetFieldId) {
   const modal = document.getElementById('qrScannerModal');
   const title = document.getElementById('qrModalTitle');
   if (title) {
-    title.textContent = targetFieldId === 'asettInput' ? 'اسکن بارکد / QR کد تجهیز (ASETT)' : 'اسکن بارکد / QR کد قطعه (Rebuildable)';
+    title.textContent = targetFieldId === 'asettInput' ? 'اسکن بارکد / QR کد تجهیز (ASETT ID)' : 'اسکن بارکد / QR کد قطعه (rebuidable ID )';
   }
   if (modal) modal.classList.remove('hidden');
   startQrVideoScan();
@@ -609,6 +1153,17 @@ function clearQrField(targetFieldId) {
   showToast('کد اسکن‌شده پاکسازی شد', 'info');
 }
 
+function handleAsettInput(inputEl) {
+  const clearBtn = document.getElementById('clearAsettBtn');
+  if (clearBtn) {
+    if (inputEl && inputEl.value.trim().length > 0) {
+      clearBtn.classList.remove('hidden');
+    } else {
+      clearBtn.classList.add('hidden');
+    }
+  }
+}
+
 // ==========================================
 // ۹. ثبت و ذخیره‌سازی گراف در IndexedDB
 // ==========================================
@@ -624,42 +1179,38 @@ async function handleGraphFormSubmit(e) {
   const asett = document.getElementById('asettInput').value.trim();
   const rebuildable = document.getElementById('rebuildableInput').value.trim();
   const reportNotes = document.getElementById('reportNotesInput').value.trim();
-  const activityType = document.getElementById('activityTypeSelect').value;
+  
+  // بررسی فعالیت‌های ثبت شده
+  let activities = (window.AppState.addedActivities && window.AppState.addedActivities.length > 0)
+    ? [...window.AppState.addedActivities]
+    : [];
 
-  if (!activityType) {
-    showToast('لطفاً نوع فعالیت را انتخاب نمایید', 'error');
+  const activitySelectVal = document.getElementById('activityTypeSelect')?.value.trim();
+
+  // اگر هنوز در لیست خالی است اما در نوار کشویی مقداری انتخاب شده، خودکار ارزیابی و اضافه شود
+  if (activities.length === 0) {
+    if (activitySelectVal) {
+      addSelectedActivity();
+      activities = (window.AppState.addedActivities && window.AppState.addedActivities.length > 0)
+        ? [...window.AppState.addedActivities]
+        : [];
+    }
+  }
+
+  if (activities.length === 0) {
+    showToast('لطفاً نوع فعالیت انجام شده را انتخاب و با دکمه ADD اضافه فرمایید', 'error');
+    document.getElementById('activityTypeSelect')?.focus();
     return;
   }
-  if (!reportNotes) {
-    showToast('لطفاً شرح کامل گزارش را وارد نمایید', 'error');
-    return;
-  }
 
-  const conditionalFields = {};
-  if (activityType === 'مونتاژ تجهیزات' || activityType === 'دمونتاژ تجهیزات') {
-    const val = document.getElementById('equipmentIdInput').value.trim();
-    if (!val) {
-      showToast('لطفاً شماره شناسایی تجهیز را وارد نمایید', 'error');
-      return;
-    }
-    conditionalFields.equipmentId = val;
-  } else if (activityType === 'انجام تنظیمات حرفه‌ای') {
-    const devTag = document.getElementById('deviceTagInput').value.trim();
-    const refTool = document.getElementById('referenceToolInput').value.trim();
-    if (!devTag || !refTool) {
-      showToast('لطفاً هر دو فیلد شماره تجهیز و شماره مرجع را وارد نمایید', 'error');
-      return;
-    }
-    conditionalFields.deviceTag = devTag;
-    conditionalFields.referenceTool = refTool;
-  } else if (activityType === 'انجام کابل‌کشی' || activityType === 'انجام کاندوئیت‌کاری') {
-    const footage = document.getElementById('footageInput').value.trim();
-    if (!footage) {
-      showToast('لطفاً متراژ را وارد نمایید', 'error');
-      return;
-    }
-    conditionalFields.footage = footage;
-  }
+  const primaryActivity = activities[0];
+  const activityTypeSummary = activities.map((a) => a.type).join(' | ');
+
+  // تصاویر ثبت شده (پشتیبانی از چند عکس)
+  const photos = (window.AppState.capturedImages && window.AppState.capturedImages.length > 0)
+    ? [...window.AppState.capturedImages]
+    : (window.AppState.capturedImageBase64 ? [window.AppState.capturedImageBase64] : []);
+  const primaryPhoto = photos.length > 0 ? photos[0] : null;
 
   const isOnline = navigator.onLine;
   const now = new Date();
@@ -673,10 +1224,12 @@ async function handleGraphFormSubmit(e) {
     operator: { ...window.AppState.operator },
     asett,
     rebuildable,
-    photo: window.AppState.capturedImageBase64 || null,
-    reportNotes,
-    activityType,
-    conditionalFields,
+    photo: primaryPhoto,
+    photos: photos,
+    reportNotes: reportNotes || '', // توضیحات تکمیلی اختیاری است
+    activityType: activityTypeSummary,
+    activities: activities,
+    conditionalFields: primaryActivity.conditionalFields || {},
     colleagues: [...window.AppState.colleagues],
     location: { ...window.AppState.currentLocation },
     syncStatus: isOnline ? 'synced' : 'pending',
@@ -687,8 +1240,8 @@ async function handleGraphFormSubmit(e) {
     const id = await saveGraphRecord(graphRecord);
     showToast(
       isOnline
-        ? `گراف شماره #${id} با موفقیت ثبت و همگام‌سازی شد.`
-        : `گراف شماره #${id} به دلیل آفلاین بودن در حافظه ذخیره و در صف انتظار قرار گرفت.`,
+        ? `فعالیت شماره #${id} با موفقیت ثبت و همگام‌سازی شد.`
+        : `فعالیت شماره #${id} به دلیل آفلاین بودن در حافظه ذخیره و در صف انتظار قرار گرفت.`,
       isOnline ? 'success' : 'warning'
     );
 
@@ -703,15 +1256,27 @@ async function handleGraphFormSubmit(e) {
 function resetGraphForm() {
   document.getElementById('asettInput').value = '';
   document.getElementById('rebuildableInput').value = '';
+  const clearAsett = document.getElementById('clearAsettBtn');
+  if (clearAsett) clearAsett.classList.add('hidden');
+  const clearRebuildable = document.getElementById('clearRebuildableBtn');
+  if (clearRebuildable) clearRebuildable.classList.add('hidden');
   document.getElementById('reportNotesInput').value = '';
   document.getElementById('activityTypeSelect').value = '';
+  const customInput = document.getElementById('customActivityInput');
+  if (customInput) customInput.value = '';
   document.getElementById('equipmentIdInput').value = '';
   document.getElementById('deviceTagInput').value = '';
   document.getElementById('referenceToolInput').value = '';
   document.getElementById('footageInput').value = '';
   handleActivityChange();
 
+  window.AppState.addedActivities = [];
+  renderAddedActivitiesList();
+
+  window.AppState.capturedImages = [];
   window.AppState.capturedImageBase64 = null;
+  const fileInput = document.getElementById('cameraFileInput');
+  if (fileInput) fileInput.value = '';
   renderImagePreview();
 
   window.AppState.colleagues = [];
@@ -824,11 +1389,51 @@ function updateLiveClock() {
 const SUPER_ADMIN = {
   username: 'admin',
   password: 'Ehsan2559',
-  fullName: 'احسان ابوالقاسمی',
+  fullName: 'احسان ابوالقاسمی (مدیر نرم افزار )',
   isSuperAdmin: true,
   unit: 'کل واحدها',
   supervision: 'کل سرپرستی‌ها'
 };
+
+function isMasterAdmin(user) {
+  if (!user) user = window.AppState ? window.AppState.currentUser : null;
+  if (!user) return false;
+  return user.username === 'admin' || user.isSuperAdmin === true;
+}
+
+function canAccessOrgManage(user) {
+  if (!user) user = window.AppState ? window.AppState.currentUser : null;
+  if (!user) return false;
+  if (isMasterAdmin(user)) return true;
+  return !!(user.permissions && user.permissions.orgManage);
+}
+
+function canAccessAdminManage(user) {
+  if (!user) user = window.AppState ? window.AppState.currentUser : null;
+  if (!user) return false;
+  if (isMasterAdmin(user)) return true;
+  return !!(user.permissions && user.permissions.adminManage);
+}
+
+function canAccessBackup(user) {
+  if (!user) user = window.AppState ? window.AppState.currentUser : null;
+  if (!user) return false;
+  if (isMasterAdmin(user)) return true;
+  return !!(user.permissions && user.permissions.backup);
+}
+
+function canAccessPersonnelManage(user) {
+  if (!user) user = window.AppState ? window.AppState.currentUser : null;
+  if (!user) return false;
+  if (isMasterAdmin(user)) return true;
+  return !!(user.permissions && user.permissions.personnelManage);
+}
+
+window.isMasterAdmin = isMasterAdmin;
+window.canAccessOrgManage = canAccessOrgManage;
+window.canAccessAdminManage = canAccessAdminManage;
+window.canAccessBackup = canAccessBackup;
+window.canAccessPersonnelManage = canAccessPersonnelManage;
 
 function checkAdminAuthSession() {
   const stored = sessionStorage.getItem('automation_admin_session');
@@ -848,6 +1453,148 @@ function checkAdminAuthSession() {
   return false;
 }
 
+// ==========================================
+// بنر ۳ ثانیه‌ای ورود به صفحه مدیران با تیتر اختصاصی
+// ==========================================
+let adminWelcomeBannerTimer = null;
+let adminWelcomeBannerInterval = null;
+
+function showAdminWelcomeBanner(displayName) {
+  const banner = document.getElementById('adminWelcomeBanner');
+  const titleEl = document.getElementById('adminWelcomeBannerTitle');
+  const progressBar = document.getElementById('adminWelcomeBannerProgressBar');
+  const countdownEl = document.getElementById('adminWelcomeBannerCountdown');
+
+  if (!banner || !titleEl) return;
+
+  if (adminWelcomeBannerTimer) {
+    clearTimeout(adminWelcomeBannerTimer);
+    adminWelcomeBannerTimer = null;
+  }
+  if (adminWelcomeBannerInterval) {
+    clearInterval(adminWelcomeBannerInterval);
+    adminWelcomeBannerInterval = null;
+  }
+
+  // تیتر دقیقاً مطابق با متن درخواستی کاربر:
+  // "{نام کاربر} عزیز به سیستم ثبت گراف مدیریت اتوماسیون و ارتباطات خوش آمدید"
+  titleEl.textContent = `${displayName} عزیز به سیستم ثبت گراف مدیریت اتوماسیون و ارتباطات خوش آمدید`;
+
+  // بازنشانی وضعیت اولیه نوار و شمارنده
+  if (countdownEl) countdownEl.textContent = '۳ ثانیه';
+  if (progressBar) {
+    progressBar.style.transition = 'none';
+    progressBar.style.width = '100%';
+  }
+
+  banner.classList.remove('hidden');
+  banner.classList.remove('translate-y-0', 'opacity-100');
+  banner.classList.add('-translate-y-2', 'opacity-0');
+
+  // اجرای انیمیشن ورود و نوار پیشرفت
+  setTimeout(() => {
+    banner.classList.remove('-translate-y-2', 'opacity-0');
+    banner.classList.add('translate-y-0', 'opacity-100');
+
+    setTimeout(() => {
+      if (progressBar) {
+        progressBar.style.transition = 'width 3000ms linear';
+        progressBar.style.width = '0%';
+      }
+    }, 40);
+  }, 20);
+
+  let remaining = 3;
+  adminWelcomeBannerInterval = setInterval(() => {
+    remaining--;
+    if (countdownEl) {
+      if (remaining > 0) {
+        countdownEl.textContent = `${remaining} ثانیه`;
+      } else {
+        countdownEl.textContent = '۰ ثانیه';
+      }
+    }
+  }, 1000);
+
+  // بسته شدن خودکار بنر دقیقاً پس از ۳ ثانیه (۳۰۰۰ میلی‌ثانیه)
+  adminWelcomeBannerTimer = setTimeout(() => {
+    closeAdminWelcomeBanner();
+  }, 3000);
+}
+
+function closeAdminWelcomeBanner() {
+  const banner = document.getElementById('adminWelcomeBanner');
+  if (adminWelcomeBannerTimer) {
+    clearTimeout(adminWelcomeBannerTimer);
+    adminWelcomeBannerTimer = null;
+  }
+  if (adminWelcomeBannerInterval) {
+    clearInterval(adminWelcomeBannerInterval);
+    adminWelcomeBannerInterval = null;
+  }
+  if (!banner) return;
+
+  banner.classList.remove('translate-y-0', 'opacity-100');
+  banner.classList.add('-translate-y-2', 'opacity-0');
+  setTimeout(() => {
+    banner.classList.add('hidden');
+  }, 500);
+}
+window.closeAdminWelcomeBanner = closeAdminWelcomeBanner;
+window.showAdminWelcomeBanner = showAdminWelcomeBanner;
+
+// اسلاید ۳ ثانیه‌ای ورود مدیران (نگهداری برای سازگاری کامل)
+function showAdminWelcomeSlide(displayName, callback) {
+  const modal = document.getElementById('adminWelcomeSlideModal');
+  const messageEl = document.getElementById('adminWelcomeMessageText');
+  const progressBar = document.getElementById('adminWelcomeProgressBar');
+  const countdownEl = document.getElementById('adminWelcomeCountdown');
+
+  if (!modal || !messageEl) {
+    if (typeof callback === 'function') callback();
+    return;
+  }
+
+  // پیام اختصاصی دقیق طبق درخواست کاربر
+  messageEl.textContent = `${displayName} عزیز به سیستم ثبت گراف مدیریت اتوماسیون و ارتباطات خوش آمدید`;
+
+  if (progressBar) {
+    progressBar.style.transition = 'none';
+    progressBar.style.width = '0%';
+  }
+  if (countdownEl) {
+    countdownEl.textContent = '۳ ثانیه';
+  }
+
+  modal.classList.remove('hidden');
+  modal.classList.remove('opacity-0');
+
+  setTimeout(() => {
+    if (progressBar) {
+      progressBar.style.transition = 'width 3000ms linear';
+      progressBar.style.width = '100%';
+    }
+  }, 40);
+
+  let secondsLeft = 3;
+  const interval = setInterval(() => {
+    secondsLeft--;
+    if (countdownEl && secondsLeft > 0) {
+      countdownEl.textContent = `${secondsLeft} ثانیه`;
+    }
+  }, 1000);
+
+  setTimeout(() => {
+    clearInterval(interval);
+    modal.classList.add('opacity-0');
+    setTimeout(() => {
+      modal.classList.add('hidden');
+      modal.classList.remove('opacity-0');
+      if (typeof callback === 'function') callback();
+    }, 300);
+  }, 3000);
+}
+
 async function handleAdminLogin(e) {
   e.preventDefault();
   const user = document.getElementById('loginUsername').value.trim();
@@ -856,9 +1603,14 @@ async function handleAdminLogin(e) {
   if (user.toLowerCase() === 'admin' && (pass === 'Ehsan2559' || pass.toLowerCase() === 'ehsan2559')) {
     window.AppState.currentUser = SUPER_ADMIN;
     sessionStorage.setItem('automation_admin_session', JSON.stringify(SUPER_ADMIN));
-    showToast('خوش آمدید، احسان ابوالقاسمی', 'success');
     closeModal('loginModal');
+    const form = document.getElementById('adminLoginForm');
+    if (form) form.reset();
+
+    const displayName = 'احسان ابوالقاسمی (مدیر نرم افزار )';
+    // انتقال به صفحه مدیر و نمایش بنر ۳ ثانیه‌ای با تیتر اختصاصی
     switchToAdminView();
+    showAdminWelcomeBanner(displayName);
     return;
   }
 
@@ -868,9 +1620,14 @@ async function handleAdminLogin(e) {
     if (match) {
       window.AppState.currentUser = match;
       sessionStorage.setItem('automation_admin_session', JSON.stringify(match));
-      showToast(`خوش آمدید، ${match.fullName || match.username}`, 'success');
       closeModal('loginModal');
+      const form = document.getElementById('adminLoginForm');
+      if (form) form.reset();
+
+      const displayName = match.fullName || match.username;
+      // انتقال به صفحه مدیر و نمایش بنر ۳ ثانیه‌ای با تیتر اختصاصی
       switchToAdminView();
+      showAdminWelcomeBanner(displayName);
       return;
     }
   } catch (err) {
@@ -911,49 +1668,166 @@ function switchToAdminView() {
   document.getElementById('adminViewSection').classList.remove('hidden');
 
   const user = window.AppState.currentUser;
-  if (user) {
-    const titleEl = document.getElementById('adminUserTitle');
-    if (titleEl) {
-      if (user.isSuperAdmin || user.username === 'admin') {
-        titleEl.textContent = 'احسان ابوالقاسمی';
-      } else {
-        titleEl.textContent = user.fullName || user.username;
-      }
-    }
-    
-    const adminManageTab = document.getElementById('tabBtnAdminManage');
-    const orgManageTab = document.getElementById('tabBtnOrgManage');
-    if (user.isSuperAdmin) {
-      if (adminManageTab) adminManageTab.classList.remove('hidden');
-      if (orgManageTab) orgManageTab.classList.remove('hidden');
-    } else {
-      if (adminManageTab) adminManageTab.classList.add('hidden');
-      if (orgManageTab) orgManageTab.classList.add('hidden');
-    }
+  renderAdminUserHeaderInfo(user);
+
+  // تنها کاربر admin و مدیرانی که در زمان تعریف مجوز ماژول‌ها را دریافت کرده‌اند به این تب‌ها دسترسی دارند
+  const canOrg = canAccessOrgManage(user);
+  const canAdmin = canAccessAdminManage(user);
+  const canBackup = canAccessBackup(user);
+  const canPersonnel = canAccessPersonnelManage(user);
+
+  const adminManageTab = document.getElementById('tabBtnAdminManage');
+  const orgManageTab = document.getElementById('tabBtnOrgManage');
+  const backupTab = document.getElementById('tabBtnBackup');
+  const personnelTab = document.getElementById('tabBtnPersonnelManage');
+
+  if (adminManageTab) {
+    if (canAdmin) adminManageTab.classList.remove('hidden');
+    else adminManageTab.classList.add('hidden');
+  }
+  if (orgManageTab) {
+    if (canOrg) orgManageTab.classList.remove('hidden');
+    else orgManageTab.classList.add('hidden');
+  }
+  if (backupTab) {
+    if (canBackup) backupTab.classList.remove('hidden');
+    else backupTab.classList.add('hidden');
+  }
+  if (personnelTab) {
+    if (canPersonnel) personnelTab.classList.remove('hidden');
+    else personnelTab.classList.add('hidden');
   }
 
+  showAdminTab('reports');
+  updateAdminFilterDropdowns();
   loadAdminReports();
-  loadAdminUsersList();
-  renderOrgManagementUI();
-  populateOrgDropdowns();
+  if (canAdmin) {
+    loadAdminUsersList();
+    populateOrgDropdowns();
+  }
+  if (canOrg) {
+    renderOrgManagementUI();
+    populateOrgDropdowns();
+  }
+  if (canPersonnel) {
+    renderPersonnelTable();
+  }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
+function renderAdminUserHeaderInfo(user) {
+  const titleEl = document.getElementById('adminUserTitle');
+  const scopeBadgeEl = document.getElementById('adminUserScopeBadge');
+  const scopeDetailEl = document.getElementById('adminUserScopeDetail');
+
+  if (!user) return;
+
+  const isSuperAdmin = isMasterAdmin(user);
+  if (titleEl) {
+    titleEl.textContent = isSuperAdmin ? 'احسان ابوالقاسمی (مدیر نرم افزار )' : (user.fullName || user.username);
+  }
+
+  const userSup = (user.supervision || '').trim();
+  const userUnit = (user.unit || '').trim();
+  const isGlobalSup = isSuperAdmin || !userSup || userSup === 'همه سرپرستی‌ها' || userSup === 'کل سرپرستی‌ها';
+  const isGlobalUnit = isSuperAdmin || !userUnit || userUnit === 'همه واحدها' || userUnit === 'کل واحدها' || userUnit === 'همه واحدهای سرپرستی';
+
+  if (scopeBadgeEl) {
+    if (isGlobalSup && isGlobalUnit) {
+      scopeBadgeEl.className = 'inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-bold bg-emerald-500/10 border border-emerald-500/30 text-emerald-300';
+      scopeBadgeEl.textContent = 'دسترسی کامل (کل سازمان)';
+    } else if (!isGlobalSup && isGlobalUnit) {
+      scopeBadgeEl.className = 'inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-bold bg-blue-500/10 border border-blue-500/30 text-blue-300';
+      scopeBadgeEl.textContent = `حوزه سرپرستی: ${userSup} (همه واحدها)`;
+    } else if (!isGlobalSup && !isGlobalUnit) {
+      scopeBadgeEl.className = 'inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-bold bg-amber-500/10 border border-amber-500/30 text-amber-300';
+      scopeBadgeEl.textContent = `حوزه اختصاصی: ${userSup} / ${userUnit}`;
+    } else {
+      scopeBadgeEl.className = 'inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg text-xs font-bold bg-amber-500/10 border border-amber-500/30 text-amber-300';
+      scopeBadgeEl.textContent = `واحد اختصاصی: ${userUnit}`;
+    }
+  }
+
+  if (scopeDetailEl) {
+    if (isGlobalSup && isGlobalUnit) {
+      scopeDetailEl.textContent = 'دسترسی نامحدود به گزارش‌های تمامی سرپرستی‌ها و واحدها';
+    } else if (!isGlobalSup && isGlobalUnit) {
+      scopeDetailEl.textContent = `فقط مجاز به مشاهده گزارش‌های زیرمجموعه سرپرستی ${userSup}`;
+    } else if (!isGlobalSup && !isGlobalUnit) {
+      scopeDetailEl.textContent = `فقط مجاز به مشاهده گزارش‌های واحد ${userUnit}`;
+    } else {
+      scopeDetailEl.textContent = `محدود به واحد ${userUnit}`;
+    }
+  }
+}
+
 // ==========================================
-// ۱۴. پنل ادمین: گزارش‌گیری، جستجو و فیلتر (RBAC)
+// ۱۴. پنل ادمین: ارزیابی سطوح دسترسی (RBAC) و گزارش‌گیری
 // ==========================================
+
+/**
+ * بررسی دسترسی مجاز مدیر به یک رکورد گزارش
+ * طبق دستور صریح کاربر:
+ * ۱. اگر مدیری برای همه سرپرستی‌ها و همه واحدها تعریف شود -> دسترسی به تمام اطلاعات
+ * ۲. اگر مدیری برای یک سرپرستی خاص و همه واحدهای آن سرپرستی تعریف شود -> دسترسی به اطلاعات کل زیرمجموعه همان سرپرستی
+ * ۳. اگر مدیری برای یک سرپرستی و یک واحد خاص تعریف شود -> فقط و فقط به اطلاعات همان واحد دسترسی دارد
+ */
+function isRecordAccessibleByAdmin(record, user) {
+  if (!user) return false;
+  if (user.isSuperAdmin || user.username === 'admin') {
+    return true; // مدیر ارشد سیستم بدون محدودیت
+  }
+
+  const userSup = (user.supervision || '').trim();
+  const userUnit = (user.unit || '').trim();
+
+  const isGlobalSup = !userSup || userSup === 'همه سرپرستی‌ها' || userSup === 'کل سرپرستی‌ها' || userSup === 'همه';
+  const isGlobalUnit = !userUnit || userUnit === 'همه واحدها' || userUnit === 'کل واحدها' || userUnit === 'همه واحدهای سرپرستی' || userUnit === 'همه';
+
+  // حالت ۱: اگر مدیر برای همه سرپرستی‌ها و همه واحدها تعریف شود -> دسترسی کامل به کل اطلاعات
+  if (isGlobalSup && isGlobalUnit) {
+    return true;
+  }
+
+  const op = record.operator || {};
+  const recordSup = (op.supervision || '').trim();
+  const recordUnit = (op.unit || '').trim();
+
+  // در صورتی که سرپرستی در فیلد مجری ثبت نشده باشد، از پایگاه داده سازمانی استخراج می‌شود
+  const allUnits = getStoredUnits();
+  const matchedUnitObj = allUnits.find((u) => u.name === recordUnit);
+  const inferredSup = matchedUnitObj ? (matchedUnitObj.supervision || '').trim() : '';
+
+  const recordBelongsToSup = isGlobalSup ||
+    (recordSup && recordSup === userSup) ||
+    (inferredSup && inferredSup === userSup);
+
+  // حالت ۲: اگر مدیر برای یک سرپرستی خاص و همه واحدهای آن سرپرستی تعریف شود -> دسترسی به تمام اطلاعات زیرمجموعه همان سرپرستی
+  if (!isGlobalSup && isGlobalUnit) {
+    return recordBelongsToSup;
+  }
+
+  // حالت ۳: اگر مدیر برای یک سرپرستی و یک واحد خاص تعریف شود -> فقط اطلاعات همان واحد در آن سرپرستی
+  if (!isGlobalSup && !isGlobalUnit) {
+    const unitMatches = recordUnit === userUnit;
+    return recordBelongsToSup && unitMatches;
+  }
+
+  // حالت فرعی (سرپرستی عمومی اما واحد اختصاصی)
+  if (isGlobalSup && !isGlobalUnit) {
+    return recordUnit === userUnit;
+  }
+
+  return false;
+}
+
 async function loadAdminReports() {
   try {
-    let records = await getAllGraphRecords();
+    const allRecords = await getAllGraphRecords();
     const user = window.AppState.currentUser;
 
-    if (user && !user.isSuperAdmin) {
-      records = records.filter((r) => {
-        const unitMatch = !user.unit || user.unit === 'همه واحدها' || (r.operator && r.operator.unit === user.unit);
-        const supMatch = !user.supervision || user.supervision === 'همه سرپرستی‌ها' || (r.operator && r.operator.supervision === user.supervision);
-        return unitMatch && supMatch;
-      });
-    }
+    // فیلتر کردن دقیق براساس حوزه سرپرستی و واحد مدیر
+    let records = allRecords.filter((r) => isRecordAccessibleByAdmin(r, user));
 
     records.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     window.AppState.allReports = records;
@@ -979,11 +1853,122 @@ function renderAdminKPIs(records) {
   document.getElementById('kpiSyncedCount').textContent = synced;
 }
 
+function updateAdminFilterDropdowns() {
+  const user = window.AppState.currentUser;
+  const supervisions = getStoredSupervisions();
+  const units = getStoredUnits();
+
+  const filterSupSelect = document.getElementById('filterSupervisionSelect');
+  const filterUnitSelect = document.getElementById('filterUnitSelect');
+  const supLockedBadge = document.getElementById('filterSupervisionLockedBadge');
+  const unitLockedBadge = document.getElementById('filterUnitLockedBadge');
+
+  if (!filterSupSelect || !filterUnitSelect) return;
+
+  const isSuperAdmin = !user || user.isSuperAdmin || user.username === 'admin';
+  const userSup = user ? (user.supervision || '').trim() : '';
+  const userUnit = user ? (user.unit || '').trim() : '';
+
+  const isGlobalSup = isSuperAdmin || !userSup || userSup === 'همه سرپرستی‌ها' || userSup === 'کل سرپرستی‌ها' || userSup === 'همه';
+  const isGlobalUnit = isSuperAdmin || !userUnit || userUnit === 'همه واحدها' || userUnit === 'کل واحدها' || userUnit === 'همه واحدهای سرپرستی' || userUnit === 'همه';
+
+  // ۱. کنترل نوار فیلتر سرپرستی
+  filterSupSelect.innerHTML = '';
+  if (isGlobalSup) {
+    filterSupSelect.disabled = false;
+    filterSupSelect.className = 'w-full bg-slate-950 border border-slate-700 focus:border-amber-500 rounded-xl px-3 py-2 text-xs text-slate-100 outline-none';
+    if (supLockedBadge) supLockedBadge.classList.add('hidden');
+
+    const allOpt = document.createElement('option');
+    allOpt.value = '';
+    allOpt.textContent = '-- همه سرپرستی‌ها --';
+    filterSupSelect.appendChild(allOpt);
+
+    supervisions.forEach((s) => {
+      const opt = document.createElement('option');
+      opt.value = s;
+      opt.textContent = s;
+      filterSupSelect.appendChild(opt);
+    });
+  } else {
+    // قفل‌شده بر روی سرپرستی این مدیر
+    filterSupSelect.disabled = true;
+    filterSupSelect.className = 'w-full bg-slate-900/90 border border-amber-500/40 rounded-xl px-3 py-2 text-xs text-amber-300 font-bold outline-none cursor-not-allowed';
+    if (supLockedBadge) supLockedBadge.classList.remove('hidden');
+
+    const opt = document.createElement('option');
+    opt.value = userSup;
+    opt.textContent = userSup;
+    filterSupSelect.appendChild(opt);
+    filterSupSelect.value = userSup;
+  }
+
+  // ۲. کنترل نوار فیلتر واحد خدمتی
+  filterUnitSelect.innerHTML = '';
+  if (!isGlobalSup && !isGlobalUnit) {
+    // قفل‌شده بر روی تک‌واحد مجاز این مدیر
+    filterUnitSelect.disabled = true;
+    filterUnitSelect.className = 'w-full bg-slate-900/90 border border-amber-500/40 rounded-xl px-3 py-2 text-xs text-amber-300 font-bold outline-none cursor-not-allowed';
+    if (unitLockedBadge) unitLockedBadge.classList.remove('hidden');
+
+    const opt = document.createElement('option');
+    opt.value = userUnit;
+    opt.textContent = userUnit;
+    filterUnitSelect.appendChild(opt);
+    filterUnitSelect.value = userUnit;
+  } else {
+    // آزاد برای فیلتر در محدوده مجاز
+    filterUnitSelect.disabled = false;
+    filterUnitSelect.className = 'w-full bg-slate-950 border border-slate-700 focus:border-amber-500 rounded-xl px-3 py-2 text-xs text-slate-100 outline-none';
+    if (unitLockedBadge) unitLockedBadge.classList.add('hidden');
+
+    const allOpt = document.createElement('option');
+    allOpt.value = '';
+    allOpt.textContent = !isGlobalSup ? `همه واحدهای ${userSup}` : '-- همه واحدها --';
+    filterUnitSelect.appendChild(allOpt);
+
+    const allowedUnits = !isGlobalSup
+      ? units.filter((u) => !u.supervision || u.supervision === userSup)
+      : units;
+
+    allowedUnits.forEach((u) => {
+      const opt = document.createElement('option');
+      opt.value = u.name;
+      opt.textContent = u.name;
+      filterUnitSelect.appendChild(opt);
+    });
+  }
+}
+
+function onAdminFilterSupervisionChange() {
+  const supSelect = document.getElementById('filterSupervisionSelect');
+  const unitSelect = document.getElementById('filterUnitSelect');
+  if (!supSelect || !unitSelect) return;
+
+  const selectedSup = supSelect.value.trim();
+  const allUnits = getStoredUnits();
+
+  unitSelect.innerHTML = '<option value="">-- همه واحدها --</option>';
+  const filteredUnits = selectedSup
+    ? allUnits.filter((u) => !u.supervision || u.supervision === selectedSup)
+    : allUnits;
+
+  filteredUnits.forEach((u) => {
+    const opt = document.createElement('option');
+    opt.value = u.name;
+    opt.textContent = u.name;
+    unitSelect.appendChild(opt);
+  });
+
+  applyAdminFilters();
+}
+
 function applyAdminFilters() {
   let list = window.AppState.allReports || [];
 
   const search = (document.getElementById('filterSearchInput')?.value || '').toLowerCase().trim();
   const activity = document.getElementById('filterActivitySelect')?.value || '';
+  const supervision = document.getElementById('filterSupervisionSelect')?.value || '';
   const unit = document.getElementById('filterUnitSelect')?.value || '';
   const dateFrom = document.getElementById('filterDateFrom')?.value.trim() || '';
   const dateTo = document.getElementById('filterDateTo')?.value.trim() || '';
@@ -994,13 +1979,23 @@ function applyAdminFilters() {
       const asett = (r.asett || '').toLowerCase();
       const rebuild = (r.rebuildable || '').toLowerCase();
       const opName = r.operator ? `${r.operator.firstName} ${r.operator.lastName} ${r.operator.personnelId}`.toLowerCase() : '';
-      const colleagues = (r.colleagues || []).join(' ');
+      const colleagues = (r.colleagues || []).map(c => typeof c === 'object' && c !== null ? `${c.name} ${c.code}` : c).join(' ').toLowerCase();
       return notes.includes(search) || asett.includes(search) || rebuild.includes(search) || opName.includes(search) || colleagues.includes(search);
     });
   }
 
   if (activity) {
     list = list.filter((r) => r.activityType === activity);
+  }
+
+  if (supervision) {
+    list = list.filter((r) => {
+      const rSup = r.operator ? (r.operator.supervision || '').trim() : '';
+      if (rSup === supervision) return true;
+      const allUnits = getStoredUnits();
+      const uObj = allUnits.find((u) => u.name === (r.operator ? r.operator.unit : ''));
+      return uObj && uObj.supervision === supervision;
+    });
   }
 
   if (unit) {
@@ -1022,9 +2017,33 @@ function applyAdminFilters() {
 function resetAdminFilters() {
   if (document.getElementById('filterSearchInput')) document.getElementById('filterSearchInput').value = '';
   if (document.getElementById('filterActivitySelect')) document.getElementById('filterActivitySelect').value = '';
-  if (document.getElementById('filterUnitSelect')) document.getElementById('filterUnitSelect').value = '';
   if (document.getElementById('filterDateFrom')) document.getElementById('filterDateFrom').value = '';
   if (document.getElementById('filterDateTo')) document.getElementById('filterDateTo').value = '';
+
+  const user = window.AppState.currentUser;
+  const isSuperAdmin = !user || user.isSuperAdmin || user.username === 'admin';
+  const userSup = user ? (user.supervision || '').trim() : '';
+  const userUnit = user ? (user.unit || '').trim() : '';
+  const isGlobalSup = isSuperAdmin || !userSup || userSup === 'همه سرپرستی‌ها' || userSup === 'کل سرپرستی‌ها';
+  const isGlobalUnit = isSuperAdmin || !userUnit || userUnit === 'همه واحدها' || userUnit === 'کل واحدها';
+
+  const filterSupSelect = document.getElementById('filterSupervisionSelect');
+  const filterUnitSelect = document.getElementById('filterUnitSelect');
+
+  if (isGlobalSup) {
+    if (filterSupSelect) filterSupSelect.value = '';
+  } else {
+    if (filterSupSelect) filterSupSelect.value = userSup;
+  }
+
+  if (isGlobalSup && isGlobalUnit) {
+    if (filterUnitSelect) filterUnitSelect.value = '';
+  } else if (!isGlobalSup && isGlobalUnit) {
+    if (filterUnitSelect) filterUnitSelect.value = '';
+  } else {
+    if (filterUnitSelect) filterUnitSelect.value = userUnit;
+  }
+
   applyAdminFilters();
 }
 
@@ -1060,9 +2079,20 @@ function renderReportsTable(list) {
       ? '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-emerald-950 text-emerald-300 border border-emerald-800">همگام‌شده</span>'
       : '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-950 text-amber-300 border border-amber-800">در صف</span>';
 
-    const photoThumb = r.photo
-      ? `<img src="${r.photo}" onclick="showDetailModal(${r.id})" class="w-10 h-10 object-cover rounded cursor-pointer border border-slate-700 hover:scale-105 transition" title="مشاهده تصویر">`
-      : '<span class="text-xs text-slate-600">بدون عکس</span>';
+    const photosList = Array.isArray(r.photos) && r.photos.length > 0 ? r.photos : (r.photo ? [r.photo] : []);
+    let photoThumb = '<span class="text-xs text-slate-500">بدون عکس</span>';
+    if (photosList.length === 1) {
+      photoThumb = `<img src="${photosList[0]}" onclick="showDetailModal(${r.id})" class="w-10 h-10 object-cover rounded cursor-pointer border border-slate-700 hover:scale-105 transition" title="مشاهده تصویر">`;
+    } else if (photosList.length > 1) {
+      photoThumb = `
+        <div class="relative inline-block cursor-pointer" onclick="showDetailModal(${r.id})" title="مشاهده ${photosList.length} تصویر">
+          <img src="${photosList[0]}" class="w-10 h-10 object-cover rounded border border-amber-500/60 shadow hover:scale-105 transition">
+          <span class="absolute -top-1.5 -left-1.5 bg-amber-500 text-slate-950 font-bold text-[9px] px-1 rounded-full border border-slate-900 shadow">
+            +${photosList.length}
+          </span>
+        </div>
+      `;
+    }
 
     tr.innerHTML = `
       <td class="p-3 text-center text-slate-400 font-mono text-xs">${idx + 1}</td>
@@ -1108,12 +2138,55 @@ function showDetailModal(id) {
   if (!content) return;
 
   const op = record.operator || {};
-  let conditionRows = '';
-  if (record.conditionalFields) {
-    if (record.conditionalFields.footage) conditionRows += `<div class="flex justify-between border-b border-slate-700 py-2"><span class="text-slate-400">متراژ:</span><span class="font-bold text-amber-400">${record.conditionalFields.footage} متر</span></div>`;
-    if (record.conditionalFields.equipmentId) conditionRows += `<div class="flex justify-between border-b border-slate-700 py-2"><span class="text-slate-400">شماره شناسایی تجهیز:</span><span class="font-mono text-amber-400">${record.conditionalFields.equipmentId}</span></div>`;
-    if (record.conditionalFields.deviceTag) conditionRows += `<div class="flex justify-between border-b border-slate-700 py-2"><span class="text-slate-400">شماره تجهیز:</span><span class="font-mono text-amber-400">${record.conditionalFields.deviceTag}</span></div>`;
-    if (record.conditionalFields.referenceTool) conditionRows += `<div class="flex justify-between border-b border-slate-700 py-2"><span class="text-slate-400">شماره مرجع (ابزار):</span><span class="font-mono text-amber-400">${record.conditionalFields.referenceTool}</span></div>`;
+
+  // پردازش و نمایش فعالیت‌های چندگانه
+  let activitiesHtml = '';
+  if (Array.isArray(record.activities) && record.activities.length > 0) {
+    activitiesHtml = record.activities.map((act, i) => {
+      let conds = '';
+      if (act.conditionalFields) {
+        if (act.conditionalFields.footage) conds += ` - متراژ: ${act.conditionalFields.footage} متر`;
+        if (act.conditionalFields.equipmentId) conds += ` - شناسایی تجهیز: ${act.conditionalFields.equipmentId}`;
+        if (act.conditionalFields.deviceTag) conds += ` - شماره تجهیز: ${act.conditionalFields.deviceTag}`;
+        if (act.conditionalFields.referenceTool) conds += ` - مرجع: ${act.conditionalFields.referenceTool}`;
+      }
+      return `
+        <div class="flex items-center justify-between p-2 rounded-lg bg-slate-950/80 border border-slate-700/60 text-xs">
+          <span class="font-bold text-amber-300">${i + 1}. ${act.type}</span>
+          <span class="text-slate-300 font-mono text-[11px]">${conds || '---'}</span>
+        </div>
+      `;
+    }).join('');
+  } else {
+    let conditionRows = '';
+    if (record.conditionalFields) {
+      if (record.conditionalFields.footage) conditionRows += ` (متراژ: ${record.conditionalFields.footage} متر)`;
+      if (record.conditionalFields.equipmentId) conditionRows += ` (تجهیز: ${record.conditionalFields.equipmentId})`;
+      if (record.conditionalFields.deviceTag) conditionRows += ` (تگ: ${record.conditionalFields.deviceTag} - مرجع: ${record.conditionalFields.referenceTool})`;
+    }
+    activitiesHtml = `<div class="font-bold text-amber-300 text-xs">${record.activityType} ${conditionRows}</div>`;
+  }
+
+  // پردازش و نمایش تصاویر چندگانه
+  const photosList = Array.isArray(record.photos) && record.photos.length > 0
+    ? record.photos
+    : (record.photo ? [record.photo] : []);
+
+  let photosHtml = '';
+  if (photosList.length > 0) {
+    photosHtml = `
+      <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800 space-y-2">
+        <h4 class="font-bold text-amber-400 text-xs border-b border-slate-800 pb-1">تصاویر ثبت شده از تجهیز و محیط کار (${photosList.length} عکس)</h4>
+        <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2.5 pt-1">
+          ${photosList.map((p, idx) => `
+            <div class="group relative aspect-square rounded-lg overflow-hidden border border-slate-700 bg-slate-950 cursor-pointer shadow hover:border-amber-500 transition" onclick="openPhotoViewerModal('${p}', ${idx})">
+              <img src="${p}" class="w-full h-full object-cover group-hover:scale-105 transition duration-200" alt="عکس شماره ${idx + 1}">
+              <span class="absolute top-1 right-1 bg-slate-900/80 text-[10px] font-mono text-amber-300 px-1.5 py-0.5 rounded border border-slate-700">#${idx + 1}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
   }
 
   const mapLink = record.location && record.location.lat
@@ -1138,26 +2211,24 @@ function showDetailModal(id) {
       </div>
 
       <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800 space-y-2">
-        <h4 class="font-bold text-amber-400 text-xs border-b border-slate-800 pb-1">جزئیات فعالیت و بارکدها</h4>
-        <div class="flex justify-between border-b border-slate-700 py-2"><span class="text-slate-400">نوع فعالیت:</span><span class="font-bold text-amber-300">${record.activityType}</span></div>
-        ${conditionRows}
-        <div class="flex justify-between border-b border-slate-700 py-2"><span class="text-slate-400">کد تجهیز (ASETT):</span><span class="font-mono text-slate-200">${record.asett || '---'}</span></div>
-        <div class="flex justify-between border-b border-slate-700 py-2"><span class="text-slate-400">قطعه داغی (Rebuildable):</span><span class="font-mono text-slate-200">${record.rebuildable || '---'}</span></div>
-        <div class="flex justify-between border-b border-slate-700 py-2"><span class="text-slate-400">موقعیت مکانی (GPS):</span>${mapLink}</div>
-        <div class="flex justify-between py-2"><span class="text-slate-400">همکاران همراه:</span><span class="font-mono text-slate-200">${(record.colleagues || []).join(', ') || 'ندارد'}</span></div>
+        <h4 class="font-bold text-amber-400 text-xs border-b border-slate-800 pb-1">فعالیت‌های انجام‌شده</h4>
+        <div class="space-y-1.5 pt-1">
+          ${activitiesHtml}
+        </div>
+        <div class="pt-2 border-t border-slate-800 space-y-1 text-xs">
+          <div class="flex justify-between py-1 border-b border-slate-800/60"><span class="text-slate-400">کد تجهیز (ASETT ID):</span><span class="font-mono text-slate-200">${record.asett || '---'}</span></div>
+          <div class="flex justify-between py-1 border-b border-slate-800/60"><span class="text-slate-400">شناسه داغی (rebuidable ID):</span><span class="font-mono text-slate-200">${record.rebuildable || '---'}</span></div>
+          <div class="flex justify-between py-1 border-b border-slate-800/60"><span class="text-slate-400">موقعیت مکانی (GPS):</span>${mapLink}</div>
+          <div class="flex justify-between py-1"><span class="text-slate-400">همکاران همراه:</span><span class="font-mono text-slate-200">${(record.colleagues || []).map(c => typeof c === 'object' && c !== null ? `${c.name} (${c.code})` : c).join('، ') || 'ندارد'}</span></div>
+        </div>
       </div>
 
       <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800">
-        <h4 class="font-bold text-amber-400 text-xs mb-2">شرح کامل گزارش میدانی:</h4>
-        <p class="text-slate-200 whitespace-pre-wrap leading-relaxed bg-slate-950/60 p-3 rounded-lg border border-slate-800/80">${record.reportNotes}</p>
+        <h4 class="font-bold text-amber-400 text-xs mb-2">توضیحات تکمیلی:</h4>
+        <p class="text-slate-200 whitespace-pre-wrap leading-relaxed bg-slate-950/60 p-3 rounded-lg border border-slate-800/80">${record.reportNotes || '<span class="text-slate-500 italic">توضیحی ثبت نشده است.</span>'}</p>
       </div>
 
-      ${record.photo ? `
-        <div class="bg-slate-900/60 p-3 rounded-xl border border-slate-800">
-          <h4 class="font-bold text-amber-400 text-xs mb-2">تصویر ثبت شده از تجهیز / محل:</h4>
-          <img src="${record.photo}" class="w-full max-h-80 object-contain rounded-lg border border-slate-700" alt="عکس تجهیز">
-        </div>
-      ` : ''}
+      ${photosHtml}
     </div>
   `;
 
@@ -1358,6 +2429,10 @@ function printReportsAsPDF() {
 // ۱۷. پشتیبان‌گیری (Backup) و بازنشانی (Restore)
 // ==========================================
 async function exportFullBackup() {
+  if (!canAccessBackup()) {
+    showToast('دسترسی غیرمجاز: شما مجوز دسترسی به ماژول پشتیبان‌گیری را ندارید', 'error');
+    return;
+  }
   try {
     const graphs = await getAllGraphRecords();
     const admins = await getAdminsList();
@@ -1389,6 +2464,11 @@ async function exportFullBackup() {
 }
 
 async function handleRestoreFile(e) {
+  if (!canAccessBackup()) {
+    showToast('دسترسی غیرمجاز: شما مجوز دسترسی به ماژول بازنشانی اطلاعات را ندارید', 'error');
+    if (e && e.target) e.target.value = '';
+    return;
+  }
   const file = e.target.files && e.target.files[0];
   if (!file) return;
 
@@ -1445,7 +2525,7 @@ async function handleRestoreFile(e) {
 }
 
 // ==========================================
-// ۱۸. مدیریت مدیران توسط Super Admin
+// ۱۸. مدیریت مدیران توسط Super Admin با تفکیک دقیق حوزه دسترسی (RBAC)
 // ==========================================
 async function loadAdminUsersList() {
   const container = document.getElementById('adminUsersListContainer');
@@ -1455,36 +2535,106 @@ async function loadAdminUsersList() {
     const list = await getAdminsList();
     container.innerHTML = '';
 
+    // ردیف مدیر ارشد سیستم (Super Admin)
     const superRow = document.createElement('div');
-    superRow.className = 'flex items-center justify-between p-3 rounded-xl bg-slate-900/60 border border-slate-700/60';
+    superRow.className = 'p-3.5 rounded-xl bg-slate-900/80 border border-amber-500/30 shadow-sm space-y-2';
     superRow.innerHTML = `
-      <div>
-        <div class="font-bold text-amber-300 text-sm">احسان ابوالقاسمی</div>
-        <div class="text-xs text-slate-400 font-mono">نام کاربری: admin | دسترسی: نامحدود (کل واحدها و سرپرستی‌ها)</div>
+      <div class="flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <span class="font-extrabold text-amber-300 text-sm">احسان ابوالقاسمی (مدیر نرم افزار )</span>
+          <span class="text-[11px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-md font-bold">مدیر ارشد (admin)</span>
+        </div>
+        <span class="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded font-bold">دسترسی جامع و نامحدود</span>
       </div>
-      <span class="text-xs bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2.5 py-1 rounded-lg font-bold">مدیر اصلی</span>
+      <div class="text-xs text-slate-400 font-mono">نام کاربری: admin</div>
+      <div class="text-[11px] text-emerald-400 font-sans font-medium flex items-center gap-1.5">
+        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block"></span>
+        <span>حوزه دسترسی سازمانی: تمام سرپرستی‌ها و تمام واحدهای سازمان</span>
+      </div>
+      <div class="flex flex-wrap gap-1.5 pt-1 border-t border-slate-800/80">
+        <span class="text-[10px] bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-bold">✓ تعریف سرپرستی‌ها و واحدها</span>
+        <span class="text-[10px] bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-bold">✓ تعریف و سطوح مدیران</span>
+        <span class="text-[10px] bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-bold">✓ پشتیبان‌گیری و بازنشانی</span>
+        <span class="text-[10px] bg-teal-500/10 text-teal-300 border border-teal-500/30 px-2 py-0.5 rounded font-bold">✓ ماژول پرسنل (کامل)</span>
+      </div>
     `;
     container.appendChild(superRow);
 
     if (list.length === 0) {
-      const p = document.createElement('p');
-      p.className = 'text-xs text-slate-400 p-2';
-      p.textContent = 'مدیر فرعی دیگری هنوز تعریف نشده است.';
+      const p = document.createElement('div');
+      p.className = 'text-xs text-slate-400 p-3.5 text-center bg-slate-900/30 rounded-xl border border-dashed border-slate-800';
+      p.textContent = 'مدیر فرعی دیگری هنوز تعریف نشده است. از فرم بالا برای تعریف مدیر با حوزه و دسترسی‌های مشخص استفاده نمایید.';
       container.appendChild(p);
       return;
     }
 
     list.forEach((admin) => {
+      const isGlobalSup = !admin.supervision || admin.supervision === 'همه سرپرستی‌ها' || admin.supervision === 'کل سرپرستی‌ها';
+      const isGlobalUnit = !admin.unit || admin.unit === 'همه واحدها' || admin.unit === 'کل واحدها' || admin.unit === 'همه واحدهای سرپرستی';
+
+      let scopeBadgeHtml = '';
+      let scopeDescHtml = '';
+
+      if (isGlobalSup && isGlobalUnit) {
+        scopeBadgeHtml = '<span class="text-[11px] bg-purple-950/80 text-purple-300 border border-purple-800 px-2 py-0.5 rounded font-bold">کل سازمان</span>';
+        scopeDescHtml = 'دسترسی نامحدود به تمامی سرپرستی‌ها و واحدها';
+      } else if (!isGlobalSup && isGlobalUnit) {
+        scopeBadgeHtml = '<span class="text-[11px] bg-blue-950/80 text-blue-300 border border-blue-800 px-2 py-0.5 rounded font-bold">سرپرستی (همه واحدها)</span>';
+        scopeDescHtml = `سرپرستی: <strong class="text-slate-100">${admin.supervision}</strong> (تمام واحدهای زیرمجموعه)`;
+      } else if (!isGlobalSup && !isGlobalUnit) {
+        scopeBadgeHtml = '<span class="text-[11px] bg-amber-950/80 text-amber-300 border border-amber-800 px-2 py-0.5 rounded font-bold">تک‌واحدی</span>';
+        scopeDescHtml = `سرپرستی: <strong class="text-slate-100">${admin.supervision}</strong> ➔ واحد: <strong class="text-amber-300">${admin.unit}</strong>`;
+      } else {
+        scopeBadgeHtml = `<span class="text-[11px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded font-bold">واحد: ${admin.unit}</span>`;
+        scopeDescHtml = `محدود به واحد ${admin.unit}`;
+      }
+
+      const hasOrgPerm = !!(admin.permissions && admin.permissions.orgManage);
+      const hasAdminPerm = !!(admin.permissions && admin.permissions.adminManage);
+      const hasBackupPerm = !!(admin.permissions && admin.permissions.backup);
+      const hasPersonnelPerm = !!(admin.permissions && admin.permissions.personnelManage);
+
+      let permsListHtml = '';
+      if (!hasOrgPerm && !hasAdminPerm && !hasBackupPerm && !hasPersonnelPerm) {
+        permsListHtml = '<span class="text-[10px] bg-slate-800/80 text-slate-400 px-2 py-0.5 rounded border border-slate-700">فقط گزارش‌گیری و کارتابل (فاقد ماژول‌های مدیریتی)</span>';
+      } else {
+        const badges = [];
+        if (hasOrgPerm) badges.push('<span class="text-[10px] bg-emerald-950/80 text-emerald-300 border border-emerald-700 px-2 py-0.5 rounded font-bold">✓ سرپرستی و واحدها</span>');
+        if (hasAdminPerm) badges.push('<span class="text-[10px] bg-blue-950/80 text-blue-300 border border-blue-700 px-2 py-0.5 rounded font-bold">✓ تعریف و سطوح مدیران</span>');
+        if (hasBackupPerm) badges.push('<span class="text-[10px] bg-amber-950/80 text-amber-300 border border-amber-700 px-2 py-0.5 rounded font-bold">✓ پشتیبان‌گیری و بازنشانی</span>');
+        if (hasPersonnelPerm) badges.push('<span class="text-[10px] bg-teal-950/80 text-teal-300 border border-teal-700 px-2 py-0.5 rounded font-bold">✓ ماژول پرسنل</span>');
+        permsListHtml = badges.join(' ');
+      }
+
       const row = document.createElement('div');
-      row.className = 'flex items-center justify-between p-3 rounded-xl bg-slate-900/40 border border-slate-800';
+      row.className = 'p-3.5 rounded-xl bg-slate-900/60 border border-slate-800 hover:border-slate-700 transition space-y-2';
       row.innerHTML = `
-        <div>
-          <div class="font-bold text-slate-200 text-sm">${admin.fullName || admin.username}</div>
-          <div class="text-xs text-slate-400 font-mono">کاربری: ${admin.username} | واحد: ${admin.unit || 'همه'} | سرپرستی: ${admin.supervision || 'همه'}</div>
+        <div class="flex items-start justify-between gap-3">
+          <div class="space-y-1">
+            <div class="flex items-center gap-2">
+              <span class="font-bold text-slate-200 text-sm">${escapeHtml(admin.fullName || admin.username)}</span>
+              ${scopeBadgeHtml}
+            </div>
+            <div class="text-xs text-slate-400 font-mono">نام کاربری: ${escapeHtml(admin.username)}</div>
+            <div class="text-[11px] text-slate-300 font-sans mt-0.5">${scopeDescHtml}</div>
+          </div>
+          <div class="flex items-center gap-1.5 shrink-0">
+            <button onclick="confirmDeleteAdmin('${escapeHtml(admin.username)}')" class="p-2 rounded-lg bg-red-950/60 hover:bg-red-900 text-red-400 hover:text-red-200 transition" title="حذف مدیر">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            </button>
+          </div>
         </div>
-        <button onclick="confirmDeleteAdmin('${admin.username}')" class="p-1.5 rounded-lg bg-red-950 text-red-400 hover:bg-red-900 transition" title="حذف مدیر">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-        </button>
+        <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80">
+          <div class="flex flex-wrap items-center gap-1.5">
+            <span class="text-[10px] text-slate-400 font-medium">ماژول‌های مجاز:</span>
+            ${permsListHtml}
+          </div>
+          <!-- کلید سریع اعطا یا سلب دسترسی ماژول پرسنل توسط admin -->
+          <button type="button" onclick="toggleAdminPersonnelAccess('${escapeHtml(admin.username)}')" class="px-2.5 py-1 text-[11px] rounded-lg border font-medium transition inline-flex items-center gap-1.5 ${hasPersonnelPerm ? 'bg-teal-950/70 hover:bg-teal-900 border-teal-700/80 text-teal-300' : 'bg-slate-800/80 hover:bg-slate-700 border-slate-700 text-slate-400 hover:text-slate-200'}" title="تغییر دسترسی مدیر به ماژول پرسنل">
+            <span class="w-2 h-2 rounded-full ${hasPersonnelPerm ? 'bg-teal-400 shadow-[0_0_6px_#2dd4bf]' : 'bg-slate-500'}"></span>
+            <span>ماژول پرسنل: <strong class="${hasPersonnelPerm ? 'text-teal-200 font-bold' : 'text-slate-300'}">${hasPersonnelPerm ? 'فعال (دسترسی دارد)' : 'غیرفعال (مسدود)'}</strong></span>
+          </button>
+        </div>
       `;
       container.appendChild(row);
     });
@@ -1493,13 +2643,89 @@ async function loadAdminUsersList() {
   }
 }
 
+function onNewAdminSupervisionChange() {
+  const supSelect = document.getElementById('newAdminSupervision');
+  const unitSelect = document.getElementById('newAdminUnit');
+  if (!supSelect || !unitSelect) return;
+
+  const selectedSup = supSelect.value.trim();
+  const allUnits = getStoredUnits();
+
+  unitSelect.innerHTML = '';
+
+  if (!selectedSup || selectedSup === 'همه سرپرستی‌ها' || selectedSup === 'کل سرپرستی‌ها') {
+    const opt = document.createElement('option');
+    opt.value = 'همه واحدها';
+    opt.textContent = 'همه واحدها (دسترسی نامحدود به کل سازمان)';
+    unitSelect.appendChild(opt);
+  } else {
+    // سرپرستی خاص انتخاب شده است
+    const allInSupOpt = document.createElement('option');
+    allInSupOpt.value = 'همه واحدها';
+    allInSupOpt.textContent = `همه واحدهای این سرپرستی (دسترسی به کل زیرمجموعه)`;
+    unitSelect.appendChild(allInSupOpt);
+
+    const filteredUnits = allUnits.filter((u) => !u.supervision || u.supervision === selectedSup);
+    filteredUnits.forEach((u) => {
+      const opt = document.createElement('option');
+      opt.value = u.name;
+      opt.textContent = `فقط واحد اختصاصی: ${u.name}`;
+      unitSelect.appendChild(opt);
+    });
+
+    if (filteredUnits.length === 0) {
+      allUnits.forEach((u) => {
+        const opt = document.createElement('option');
+        opt.value = u.name;
+        opt.textContent = `واحد: ${u.name}`;
+        unitSelect.appendChild(opt);
+      });
+    }
+  }
+
+  updateNewAdminScopeHint();
+}
+
+function updateNewAdminScopeHint() {
+  const supSelect = document.getElementById('newAdminSupervision');
+  const unitSelect = document.getElementById('newAdminUnit');
+  const hintText = document.getElementById('newAdminScopePreviewText');
+  if (!supSelect || !unitSelect || !hintText) return;
+
+  const sup = supSelect.value.trim();
+  const unit = unitSelect.value.trim();
+
+  const isGlobalSup = !sup || sup === 'همه سرپرستی‌ها' || sup === 'کل سرپرستی‌ها';
+  const isGlobalUnit = !unit || unit === 'همه واحدها' || unit === 'کل واحدها' || unit === 'همه واحدهای سرپرستی';
+
+  if (isGlobalSup && isGlobalUnit) {
+    hintText.innerHTML = '<span class="text-emerald-400 font-bold">✓ دسترسی جامع:</span> این مدیر به تمام اطلاعات و گراف‌های ثبت‌شده در <strong class="text-slate-100">تمامی سرپرستی‌ها و تمام واحدهای سازمان</strong> دسترسی کامل خواهد داشت.';
+  } else if (!isGlobalSup && isGlobalUnit) {
+    hintText.innerHTML = `<span class="text-blue-400 font-bold">✓ دسترسی سرپرستی:</span> این مدیر به تمامی اطلاعات و گراف‌های ثبت‌شده برای <strong class="text-slate-100">کل واحدهای زیرمجموعه «${sup}»</strong> دسترسی خواهد داشت.`;
+  } else if (!isGlobalSup && !isGlobalUnit) {
+    hintText.innerHTML = `<span class="text-amber-400 font-bold">✓ دسترسی محدود تک‌واحدی:</span> این مدیر <strong class="text-amber-300 font-extrabold">تنها و منحصراً</strong> به اطلاعات ثبت‌شده برای واحد <strong class="text-slate-100">«${unit}»</strong> در سرپرستی «${sup}» دسترسی خواهد داشت و گزارش‌های سایر واحدها از دید او کاملاً مخفی خواهند بود.`;
+  } else {
+    hintText.innerHTML = `<span class="text-amber-400 font-bold">✓ دسترسی واحد:</span> محدود به واحد «${unit}».`;
+  }
+}
+
 async function handleCreateNewAdmin(e) {
   e.preventDefault();
+  if (!canAccessAdminManage()) {
+    showToast('دسترسی غیرمجاز: تنها کاربر admin یا مدیران مجاز به ماژول مدیریت مدیران، امکان تعریف مدیر جدید دارند', 'error');
+    return;
+  }
   const fullName = document.getElementById('newAdminFullName').value.trim();
   const username = document.getElementById('newAdminUsername').value.trim().toLowerCase();
   const password = document.getElementById('newAdminPassword').value.trim();
   const unit = document.getElementById('newAdminUnit').value.trim();
   const supervision = document.getElementById('newAdminSupervision').value.trim();
+
+  // دریافت مجوزهای ماژول‌های ویژه انتخابی توسط admin
+  const permOrgManage = document.getElementById('permOrgManage')?.checked || false;
+  const permAdminManage = document.getElementById('permAdminManage')?.checked || false;
+  const permBackup = document.getElementById('permBackup')?.checked || false;
+  const permPersonnelManage = document.getElementById('permPersonnelManage')?.checked || false;
 
   if (!username || !password) {
     showToast('نام کاربری و رمز عبور الزامی است', 'error');
@@ -1516,13 +2742,20 @@ async function handleCreateNewAdmin(e) {
     password,
     unit: unit || 'همه واحدها',
     supervision: supervision || 'همه سرپرستی‌ها',
+    permissions: {
+      orgManage: permOrgManage,
+      adminManage: permAdminManage,
+      backup: permBackup,
+      personnelManage: permPersonnelManage
+    },
     createdAt: new Date().toISOString()
   };
 
   try {
     await saveAdminUser(newAdmin);
-    showToast(`مدیر جدید با نام کاربری ${username} با موفقیت ثبت شد`, 'success');
+    showToast(`مدیر جدید با نام کاربری «${username}» و دسترسی‌های تعیین‌شده با موفقیت ثبت شد`, 'success');
     document.getElementById('newAdminForm').reset();
+    populateOrgDropdowns();
     loadAdminUsersList();
   } catch (err) {
     console.error('Admin create error', err);
@@ -1531,6 +2764,10 @@ async function handleCreateNewAdmin(e) {
 }
 
 async function confirmDeleteAdmin(username) {
+  if (!canAccessAdminManage()) {
+    showToast('دسترسی غیرمجاز: شما مجوز حذف مدیران را ندارید', 'error');
+    return;
+  }
   if (confirm(`آیا از حذف مدیر با نام کاربری "${username}" اطمینان دارید؟`)) {
     try {
       await deleteAdminUser(username);
@@ -1542,30 +2779,80 @@ async function confirmDeleteAdmin(username) {
   }
 }
 
+// تغییر وضعیت دسترسی ماژول پرسنل برای مدیران توسط admin
+async function toggleAdminPersonnelAccess(username) {
+  if (!canAccessAdminManage()) {
+    showToast('تنها کاربر admin مجوز تغییر دسترسی‌های مدیران را دارد', 'error');
+    return;
+  }
+  try {
+    const admins = await getAdminsList();
+    const admin = admins.find(a => a.username === username);
+    if (!admin) {
+      showToast('مدیر مورد نظر یافت نشد', 'error');
+      return;
+    }
+    if (!admin.permissions) admin.permissions = {};
+    const newStatus = !admin.permissions.personnelManage;
+    admin.permissions.personnelManage = newStatus;
+    await saveAdminUser(admin);
+    showToast(`دسترسی به ماژول پرسنل برای مدیر «${username}» ${newStatus ? 'فعال گردید' : 'غیرفعال شد'}`, 'success');
+    loadAdminUsersList();
+  } catch (e) {
+    console.error('Error toggling admin personnel permission:', e);
+    showToast('خطا در تغییر دسترسی مدیر', 'error');
+  }
+}
+
 // ==========================================
 // ۱۹. مدیریت سرپرستی‌ها و واحدهای سازمانی (Org Structure)
 // ==========================================
+const ORG_STRUCTURE_VERSION = 'v3_telecom_tech_workshops';
+
 const DEFAULT_SUPERVISIONS = [
-  'سرپرستی اتوماسیون صنعتی',
-  'سرپرستی تله‌متری و ابزار دقیق',
-  'سرپرستی مخابرات و ارتباطات رادیویی',
-  'سرپرستی شبکه‌های صنعتی و اسکادا'
+  'سرپرستی مخابرات',
+  'سرپرستی خدمات فنی',
+  'سرپرستی اتوماسیون کارگاه ها'
 ];
 
 const DEFAULT_UNITS = [
-  { name: 'واحد اتوماسیون صنعتی و PLC', supervision: 'سرپرستی اتوماسیون صنعتی' },
-  { name: 'واحد تله‌متری و ابزار دقیق', supervision: 'سرپرستی تله‌متری و ابزار دقیق' },
-  { name: 'واحد مخابرات و ارتباطات رادیویی', supervision: 'سرپرستی مخابرات و ارتباطات رادیویی' },
-  { name: 'واحد شبکه‌های صنعتی و SCADA', supervision: 'سرپرستی شبکه‌های صنعتی و اسکادا' },
-  { name: 'واحد فیبر نوری و خطوط ارتباطی', supervision: 'سرپرستی مخابرات و ارتباطات رادیویی' }
+  // سرپرستی مخابرات
+  { name: 'واحد اعلام حریق', supervision: 'سرپرستی مخابرات' },
+  { name: 'واحد صوتی و تصویری', supervision: 'سرپرستی مخابرات' },
+  { name: 'واحد شبکه مخابرات', supervision: 'سرپرستی مخابرات' },
+  { name: 'واحد اسکادا', supervision: 'سرپرستی مخابرات' },
+  { name: 'واحد تعمیرگاه مخابرات', supervision: 'سرپرستی مخابرات' },
+  { name: 'واحد مراکز تلفن', supervision: 'سرپرستی مخابرات' },
+
+  // سرپرستی خدمات فنی
+  { name: 'واحد توزین', supervision: 'سرپرستی خدمات فنی' },
+  { name: 'واحد کارگاه مکانیک', supervision: 'سرپرستی خدمات فنی' },
+  { name: 'واحد ابزار دقیق', supervision: 'سرپرستی خدمات فنی' },
+  { name: 'واحد ازمایشگاه الکترونیک و کامپیوتر', supervision: 'سرپرستی خدمات فنی' },
+
+  // سرپرستی اتوماسیون کارگاه ها
+  { name: 'اتوماسیون نورد', supervision: 'سرپرستی اتوماسیون کارگاه ها' },
+  { name: 'اتوماسیون کک سازی', supervision: 'سرپرستی اتوماسیون کارگاه ها' },
+  { name: 'اتوماسیون فولادسازی', supervision: 'سرپرستی اتوماسیون کارگاه ها' },
+  { name: 'اتوماسیون آگلومراسیون', supervision: 'سرپرستی اتوماسیون کارگاه ها' },
+  { name: 'اتوماسیون نیروگاهها', supervision: 'سرپرستی اتوماسیون کارگاه ها' },
+  { name: 'اتوماسیون انرژی', supervision: 'سرپرستی اتوماسیون کارگاه ها' },
+  { name: 'اتوماسیون آبرسانی', supervision: 'سرپرستی اتوماسیون کارگاه ها' }
 ];
 
 function getStoredSupervisions() {
   try {
+    const ver = localStorage.getItem('automation_org_version');
+    if (ver !== ORG_STRUCTURE_VERSION) {
+      localStorage.setItem('automation_org_version', ORG_STRUCTURE_VERSION);
+      localStorage.setItem('automation_supervisions', JSON.stringify(DEFAULT_SUPERVISIONS));
+      localStorage.setItem('automation_units', JSON.stringify(DEFAULT_UNITS));
+      return [...DEFAULT_SUPERVISIONS];
+    }
     const raw = localStorage.getItem('automation_supervisions');
     if (raw !== null) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
     }
   } catch (e) {
     console.error('Error reading supervisions', e);
@@ -1581,10 +2868,17 @@ function saveStoredSupervisions(list) {
 
 function getStoredUnits() {
   try {
+    const ver = localStorage.getItem('automation_org_version');
+    if (ver !== ORG_STRUCTURE_VERSION) {
+      localStorage.setItem('automation_org_version', ORG_STRUCTURE_VERSION);
+      localStorage.setItem('automation_supervisions', JSON.stringify(DEFAULT_SUPERVISIONS));
+      localStorage.setItem('automation_units', JSON.stringify(DEFAULT_UNITS));
+      return [...DEFAULT_UNITS];
+    }
     const raw = localStorage.getItem('automation_units');
     if (raw !== null) {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
+      if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed.map((u) => (typeof u === 'string' ? { name: u, supervision: '' } : u));
       }
     }
@@ -1602,6 +2896,10 @@ function saveStoredUnits(list) {
 
 function handleCreateSupervision(e) {
   if (e) e.preventDefault();
+  if (!canAccessOrgManage()) {
+    showToast('دسترسی غیرمجاز: تنها کاربر admin یا مدیران مجاز امکان تعریف سرپرستی‌ها و واحدها را دارند', 'error');
+    return;
+  }
   const input = document.getElementById('newSupervisionInput');
   const name = input ? input.value.trim() : '';
   if (!name) {
@@ -1620,6 +2918,10 @@ function handleCreateSupervision(e) {
 }
 
 function handleDeleteSupervision(index) {
+  if (!canAccessOrgManage()) {
+    showToast('دسترسی غیرمجاز: شما مجوز حذف سرپرستی‌ها را ندارید', 'error');
+    return;
+  }
   const current = getStoredSupervisions();
   const item = current[index];
   if (!item) return;
@@ -1631,6 +2933,10 @@ function handleDeleteSupervision(index) {
 }
 
 function handleEditSupervision(index) {
+  if (!canAccessOrgManage()) {
+    showToast('دسترسی غیرمجاز: شما مجوز ویرایش سرپرستی‌ها را ندارید', 'error');
+    return;
+  }
   const current = getStoredSupervisions();
   const item = current[index];
   if (!item) return;
@@ -1650,6 +2956,10 @@ function handleEditSupervision(index) {
 
 function handleCreateUnit(e) {
   if (e) e.preventDefault();
+  if (!canAccessOrgManage()) {
+    showToast('دسترسی غیرمجاز: تنها کاربر admin یا مدیران مجاز امکان تعریف واحدها را دارند', 'error');
+    return;
+  }
   const input = document.getElementById('newUnitInput');
   const supSelect = document.getElementById('newUnitSupervisionSelect');
   const name = input ? input.value.trim() : '';
@@ -1671,6 +2981,10 @@ function handleCreateUnit(e) {
 }
 
 function handleDeleteUnit(index) {
+  if (!canAccessOrgManage()) {
+    showToast('دسترسی غیرمجاز: شما مجوز حذف واحدها را ندارید', 'error');
+    return;
+  }
   const current = getStoredUnits();
   const item = current[index];
   if (!item) return;
@@ -1682,6 +2996,10 @@ function handleDeleteUnit(index) {
 }
 
 function handleEditUnit(index) {
+  if (!canAccessOrgManage()) {
+    showToast('دسترسی غیرمجاز: شما مجوز ویرایش واحدها را ندارید', 'error');
+    return;
+  }
   const current = getStoredUnits();
   const item = current[index];
   if (!item) return;
@@ -1694,7 +3012,12 @@ function handleEditUnit(index) {
 }
 
 function resetOrgStructureToDefault() {
+  if (!canAccessOrgManage()) {
+    showToast('دسترسی غیرمجاز: شما مجوز بازنشانی ساختار سازمانی را ندارید', 'error');
+    return;
+  }
   if (confirm('آیا از بازنشانی سرپرستی‌ها و واحدها به مقادیر پیش‌فرض اطمینان دارید؟')) {
+    localStorage.setItem('automation_org_version', ORG_STRUCTURE_VERSION);
     saveStoredSupervisions([...DEFAULT_SUPERVISIONS]);
     saveStoredUnits([...DEFAULT_UNITS]);
     showToast('ساختار سازمانی به حالت پیش‌فرض بازنشانی شد', 'success');
@@ -1861,45 +3184,25 @@ function populateOrgDropdowns() {
   // ۲. نوار انتخاب واحد در مشخصات پرسنلی
   updateModalUnitsDropdown();
 
-  // ۳. فیلتر واحد در گزارش‌های ادمین
-  const filterUnitSelect = document.getElementById('filterUnitSelect');
-  if (filterUnitSelect) {
-    const curVal = filterUnitSelect.value;
-    filterUnitSelect.innerHTML = '<option value="">همه واحدها</option>';
-    units.forEach((u) => {
-      const opt = document.createElement('option');
-      opt.value = u.name;
-      opt.textContent = u.name;
-      filterUnitSelect.appendChild(opt);
-    });
-    if (curVal) filterUnitSelect.value = curVal;
-  }
+  // ۳. هماهنگ‌سازی منوهای فیلتر گزارش‌های پنل ادمین
+  updateAdminFilterDropdowns();
 
-  // ۴. تعریف مدیر جدید - واحد و سرپرستی
-  const newAdminUnitSelect = document.getElementById('newAdminUnit');
-  if (newAdminUnitSelect) {
-    const curVal = newAdminUnitSelect.value;
-    newAdminUnitSelect.innerHTML = '<option value="همه واحدها">کل واحدها (بدون محدودیت)</option>';
-    units.forEach((u) => {
-      const opt = document.createElement('option');
-      opt.value = u.name;
-      opt.textContent = u.name;
-      newAdminUnitSelect.appendChild(opt);
-    });
-    if (curVal) newAdminUnitSelect.value = curVal;
-  }
-
+  // ۴. تعریف مدیر جدید - گزینه‌های سرپرستی و هماهنگ‌سازی پویای واحدها
   const newAdminSupSelect = document.getElementById('newAdminSupervision');
   if (newAdminSupSelect) {
     const curVal = newAdminSupSelect.value;
-    newAdminSupSelect.innerHTML = '<option value="همه سرپرستی‌ها">کل سرپرستی‌ها (بدون محدودیت)</option>';
+    newAdminSupSelect.innerHTML = '<option value="همه سرپرستی‌ها">همه سرپرستی‌ها (کل سازمان)</option>';
     supervisions.forEach((sup) => {
       const opt = document.createElement('option');
       opt.value = sup;
       opt.textContent = sup;
       newAdminSupSelect.appendChild(opt);
     });
-    if (curVal) newAdminSupSelect.value = curVal;
+    if (curVal && (curVal === 'همه سرپرستی‌ها' || supervisions.includes(curVal))) {
+      newAdminSupSelect.value = curVal;
+    }
+    // به‌روزرسانی پویای منوی واحدهای وابسته و راهنمای محدوده دسترسی
+    onNewAdminSupervisionChange();
   }
 }
 
@@ -1989,39 +3292,111 @@ function closeModal(id) {
 }
 
 // ==========================================
-// ۲۱. آماده‌سازی PWA و نصب روی موبایل
+// ۲۱. آماده‌سازی PWA و نصب روی موبایل و رایانه
 // ==========================================
-function setupPWAInstall() {
-  const btn = document.getElementById('pwaInstallBtn');
+function handlePWAInstallClick() {
+  if (window.pwaDeferredPrompt) {
+    triggerDirectInstall();
+  } else {
+    if (typeof openModal === 'function') {
+      openModal('pwaInstallModal');
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+      const isAndroid = /Android/.test(navigator.userAgent);
+      if (isIOS) switchInstallTab('ios');
+      else if (isAndroid) switchInstallTab('android');
+      else switchInstallTab('desktop');
+    }
+  }
+}
 
-  window.addEventListener('beforeinstallprompt', (e) => {
-    e.preventDefault();
-    window.AppState.deferredPrompt = e;
-    if (btn) btn.classList.remove('hidden');
+async function triggerDirectInstall() {
+  if (window.pwaDeferredPrompt) {
+    try {
+      window.pwaDeferredPrompt.prompt();
+      const { outcome } = await window.pwaDeferredPrompt.userChoice;
+      if (outcome === 'accepted') {
+        showToast('برنامه با موفقیت در حال نصب روی دستگاه شما است', 'success');
+        const btn = document.getElementById('pwaInstallBtn');
+        if (btn) btn.classList.add('hidden');
+        const banner = document.getElementById('pwaInstallBanner');
+        if (banner) banner.classList.add('hidden');
+        closeModal('pwaInstallModal');
+      }
+      window.pwaDeferredPrompt = null;
+    } catch (e) {
+      console.warn('[PWA] Prompt error:', e);
+      openModal('pwaInstallModal');
+    }
+  } else {
+    openModal('pwaInstallModal');
+  }
+}
+
+function switchInstallTab(tab) {
+  const tabs = ['android', 'desktop', 'ios'];
+  tabs.forEach((t) => {
+    const el = document.getElementById(`installTab${t.charAt(0).toUpperCase() + t.slice(1)}`);
+    const btn = document.getElementById(`installTab${t.charAt(0).toUpperCase() + t.slice(1)}Btn`);
+    if (el) el.classList.add('hidden');
+    if (btn) {
+      btn.className = 'pb-2 px-2 border-b-2 border-transparent text-slate-400 hover:text-slate-200';
+    }
   });
 
-  if (btn) {
-    btn.addEventListener('click', async () => {
-      if (window.AppState.deferredPrompt) {
-        window.AppState.deferredPrompt.prompt();
-        const { outcome } = await window.AppState.deferredPrompt.userChoice;
-        if (outcome === 'accepted') {
-          showToast('برنامه با موفقیت در حال نصب روی دستگاه شماست', 'success');
-          btn.classList.add('hidden');
-        }
-        window.AppState.deferredPrompt = null;
-      } else {
-        openModal('iosInstallModal');
-      }
-    });
+  const activeEl = document.getElementById(`installTab${tab.charAt(0).toUpperCase() + tab.slice(1)}`);
+  const activeBtn = document.getElementById(`installTab${tab.charAt(0).toUpperCase() + tab.slice(1)}Btn`);
+  if (activeEl) activeEl.classList.remove('hidden');
+  if (activeBtn) {
+    activeBtn.className = 'pb-2 px-2 border-b-2 border-amber-500 text-amber-400';
+  }
+}
+
+function dismissPWABanner() {
+  const banner = document.getElementById('pwaInstallBanner');
+  if (banner) banner.classList.add('hidden');
+  localStorage.setItem('pwa_banner_dismissed', 'true');
+}
+
+function setupPWAInstall() {
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches ||
+                       window.navigator.standalone === true;
+
+  const btn = document.getElementById('pwaInstallBtn');
+  const badge = document.getElementById('pwaInstalledBadge');
+  const banner = document.getElementById('pwaInstallBanner');
+
+  if (isStandalone) {
+    if (btn) btn.classList.add('hidden');
+    if (badge) badge.classList.remove('hidden');
+    if (banner) banner.classList.add('hidden');
+  } else {
+    if (btn) btn.classList.remove('hidden');
+    const isDismissed = localStorage.getItem('pwa_banner_dismissed') === 'true';
+    if (!isDismissed && banner) {
+      banner.classList.remove('hidden');
+    }
   }
 
+  window.addEventListener('pwaPromptReady', () => {
+    console.log('[PWA] Prompt is ready for install');
+    const directBox = document.getElementById('pwaDirectInstallBox');
+    if (directBox) directBox.classList.remove('hidden');
+  });
+
+  window.addEventListener('pwaInstalled', () => {
+    if (btn) btn.classList.add('hidden');
+    if (badge) badge.classList.remove('hidden');
+    if (banner) banner.classList.add('hidden');
+    showToast('نصب اپلیکیشن ثبت گراف با موفقیت تکمیل شد', 'success');
+  });
+
+  // ثبت مطمئن و پایدار Service Worker
   if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('./service-worker.js')
-        .then((reg) => console.log('[PWA] Service Worker registered with scope:', reg.scope))
-        .catch((err) => console.warn('[PWA] Service Worker registration failed:', err));
-    });
+    navigator.serviceWorker.register('/service-worker.js', { scope: '/' })
+      .then((reg) => {
+        console.log('[PWA] Service Worker registered with scope:', reg.scope);
+      })
+      .catch((err) => console.warn('[PWA] Service Worker registration failed:', err));
   }
 }
 
@@ -2031,11 +3406,12 @@ function setupPWAInstall() {
 document.addEventListener('DOMContentLoaded', () => {
   initThemeUI();
   loadOperatorProfile();
+  loadPersonnelData();
   populateOrgDropdowns();
   renderOrgManagementUI();
   updateLiveClock();
   setInterval(updateLiveClock, 1000);
-  updateGPSLocation();
+  startAutoGPS();
   setupCameraInput();
   updateNetworkStatusIndicator();
   updatePendingQueueCount();
@@ -2052,6 +3428,22 @@ document.addEventListener('DOMContentLoaded', () => {
     modalSupSelect.addEventListener('change', () => updateModalUnitsDropdown());
   }
 
+  const modalUnitSelect = document.getElementById('modalUnit');
+  if (modalUnitSelect) {
+    modalUnitSelect.addEventListener('change', () => {
+      const selectedUnitName = modalUnitSelect.value;
+      const modalSup = document.getElementById('modalSupervision');
+      if (modalSup && !modalSup.value && selectedUnitName) {
+        const allUnits = getStoredUnits();
+        const found = allUnits.find((u) => u.name === selectedUnitName);
+        if (found && found.supervision) {
+          modalSup.value = found.supervision;
+          updateModalUnitsDropdown(selectedUnitName);
+        }
+      }
+    });
+  }
+
   const loginForm = document.getElementById('adminLoginForm');
   if (loginForm) loginForm.addEventListener('submit', handleAdminLogin);
 
@@ -2066,4 +3458,382 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const restoreInput = document.getElementById('restoreFileInput');
   if (restoreInput) restoreInput.addEventListener('change', handleRestoreFile);
+
+  const addActivityBtn = document.getElementById('addActivityBtn');
+  if (addActivityBtn) {
+    addActivityBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      addSelectedActivity();
+    });
+  }
 });
+
+// ==========================================
+// ۲۱. ماژول مدیریت پرسنل (Personnel Management) در پنل مدیریت
+// ==========================================
+function renderPersonnelTable() {
+  const tbody = document.getElementById('personnelTableBody');
+  const countText = document.getElementById('personnelFilterCountText');
+  const totalBadge = document.getElementById('personnelTotalBadge');
+  const pageInfo = document.getElementById('personnelPaginationInfo');
+  const paginationControls = document.getElementById('personnelPaginationControls');
+  if (!tbody) return;
+
+  const allPersonnel = window.AppState.personnel || [];
+  if (totalBadge) {
+    totalBadge.textContent = `${allPersonnel.length.toLocaleString('fa-IR')} پرسنل`;
+  }
+
+  const query = (window.AppState.personnelSearchQuery || '').trim().toLowerCase();
+  let filtered = allPersonnel;
+  if (query) {
+    filtered = allPersonnel.filter((p) => {
+      const code = String(p.code || '').toLowerCase();
+      const name = String(p.name || '').toLowerCase();
+      return code.includes(query) || name.includes(query);
+    });
+  }
+
+  const total = filtered.length;
+  const pageSize = window.AppState.personnelPageSize || 50;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+
+  if (window.AppState.personnelCurrentPage > totalPages) {
+    window.AppState.personnelCurrentPage = totalPages;
+  }
+  if (window.AppState.personnelCurrentPage < 1) {
+    window.AppState.personnelCurrentPage = 1;
+  }
+  const currentPage = window.AppState.personnelCurrentPage;
+
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, total);
+  const pageItems = filtered.slice(startIndex, endIndex);
+
+  if (countText) {
+    if (query) {
+      countText.textContent = `یافت‌شده: ${total.toLocaleString('fa-IR')} از کل ${allPersonnel.length.toLocaleString('fa-IR')} نفر`;
+    } else {
+      countText.textContent = `نمایش ${startIndex + 1} تا ${endIndex} از کل ${total.toLocaleString('fa-IR')} پرسنل`;
+    }
+  }
+
+  if (pageInfo) {
+    pageInfo.textContent = `صفحه ${currentPage.toLocaleString('fa-IR')} از ${totalPages.toLocaleString('fa-IR')} (تعداد کل: ${total.toLocaleString('fa-IR')})`;
+  }
+
+  if (pageItems.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="4" class="py-10 text-center text-slate-500 font-sans">
+          پرسنلی با مشخصات جستجو شده یافت نشد.
+        </td>
+      </tr>
+    `;
+  } else {
+    tbody.innerHTML = pageItems.map((p, idx) => {
+      const rowNum = startIndex + idx + 1;
+      return `
+        <tr class="hover:bg-slate-800/50 transition border-b border-slate-800/40">
+          <td class="py-2.5 px-3 text-center text-slate-500 text-[11px] font-mono">${rowNum}</td>
+          <td class="py-2.5 px-4 font-mono font-bold text-amber-300">${escapeHtml(p.code)}</td>
+          <td class="py-2.5 px-4 text-slate-200 font-medium">${escapeHtml(p.name)}</td>
+          <td class="py-2.5 px-4 text-center">
+            <button type="button" onclick="confirmDeletePersonnel('${escapeHtml(p.code)}', '${escapeHtml(p.name)}')" class="px-2.5 py-1 text-[11px] bg-red-950/40 hover:bg-red-900/60 text-red-300 hover:text-red-100 border border-red-800/60 rounded-lg transition" title="حذف از بانک پرسنل">
+              حذف
+            </button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  // ایجاد دکمه‌های کنترل صفحه‌بندی
+  if (paginationControls) {
+    let html = '';
+    html += `<button type="button" onclick="goToPersonnelPage(1)" ${currentPage === 1 ? 'disabled' : ''} class="px-2 py-1 rounded bg-slate-800 text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-700 text-xs">« اول</button>`;
+    html += `<button type="button" onclick="goToPersonnelPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''} class="px-2.5 py-1 rounded bg-slate-800 text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-700 text-xs">قبلی</button>`;
+
+    const startP = Math.max(1, currentPage - 2);
+    const endP = Math.min(totalPages, currentPage + 2);
+    for (let i = startP; i <= endP; i++) {
+      if (i === currentPage) {
+        html += `<span class="px-2.5 py-1 rounded bg-amber-500 text-slate-950 font-bold text-xs">${i.toLocaleString('fa-IR')}</span>`;
+      } else {
+        html += `<button type="button" onclick="goToPersonnelPage(${i})" class="px-2.5 py-1 rounded bg-slate-800 text-slate-300 hover:bg-slate-700 text-xs">${i.toLocaleString('fa-IR')}</button>`;
+      }
+    }
+
+    html += `<button type="button" onclick="goToPersonnelPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''} class="px-2.5 py-1 rounded bg-slate-800 text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-700 text-xs">بعدی</button>`;
+    html += `<button type="button" onclick="goToPersonnelPage(${totalPages})" ${currentPage === totalPages ? 'disabled' : ''} class="px-2 py-1 rounded bg-slate-800 text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-700 text-xs">آخر »</button>`;
+    paginationControls.innerHTML = html;
+  }
+}
+
+function toggleAddPersonnelForm(show) {
+  const container = document.getElementById('addPersonnelFormContainer');
+  if (!container) return;
+  if (show === undefined) {
+    container.classList.toggle('hidden');
+  } else if (show) {
+    container.classList.remove('hidden');
+  } else {
+    container.classList.add('hidden');
+  }
+  if (!container.classList.contains('hidden')) {
+    const codeInput = document.getElementById('newPersonnelCode');
+    if (codeInput) codeInput.focus();
+  }
+}
+
+async function handleNewPersonnelSubmit(e) {
+  if (e) e.preventDefault();
+  const codeInput = document.getElementById('newPersonnelCode');
+  const nameInput = document.getElementById('newPersonnelName');
+  if (!codeInput || !nameInput) return;
+
+  const code = codeInput.value.trim();
+  const name = nameInput.value.trim();
+  if (!code || !name) {
+    showToast('شماره پرسنلی و نام پرسنل الزامی است', 'error');
+    return;
+  }
+
+  const existing = window.AppState.personnelMap ? window.AppState.personnelMap.get(code) : null;
+  if (existing) {
+    if (!confirm(`پرسنل با شماره پرسنلی ${code} قبلاً با نام «${existing.name}» ثبت شده است. آیا می‌خواهید اطلاعات به‌روزرسانی شود؟`)) {
+      return;
+    }
+  }
+
+  const newRecord = { code, name };
+  await savePersonnelRecordToDB(newRecord);
+
+  // به‌روزرسانی آرایه و مپ حافظه موقت
+  const existingIdx = window.AppState.personnel.findIndex((p) => String(p.code).trim() === code);
+  if (existingIdx >= 0) {
+    window.AppState.personnel[existingIdx] = newRecord;
+  } else {
+    window.AppState.personnel.unshift(newRecord);
+  }
+  if (window.AppState.personnelMap) {
+    window.AppState.personnelMap.set(code, newRecord);
+    const unpadded = code.replace(/^0+/, '');
+    if (unpadded) window.AppState.personnelMap.set(unpadded, newRecord);
+  }
+
+  codeInput.value = '';
+  nameInput.value = '';
+  toggleAddPersonnelForm(false);
+  renderPersonnelTable();
+  showToast(`پرسنل با شماره ${code} با موفقیت در بانک پرسنل ذخیره شد`, 'success');
+}
+
+async function confirmDeletePersonnel(code, name) {
+  if (!confirm(`آیا از حذف پرسنل «${name}» با شماره پرسنلی ${code} اطمینان دارید؟`)) {
+    return;
+  }
+  await deletePersonnelFromDB(code);
+  window.AppState.personnel = window.AppState.personnel.filter((p) => String(p.code).trim() !== String(code).trim());
+  if (window.AppState.personnelMap) {
+    window.AppState.personnelMap.delete(String(code).trim());
+    window.AppState.personnelMap.delete(String(code).trim().replace(/^0+/, ''));
+  }
+  renderPersonnelTable();
+  showToast(`پرسنل با شماره ${code} حذف گردید`, 'info');
+}
+
+async function confirmResetPersonnelData() {
+  if (!confirm('آیا از بازنشانی کامل اطلاعات پرسنل به فایل اولیه اکسل (۷,۵۲۷ رکورد) اطمینان دارید؟ هرگونه تغییر دستی بازنشانی خواهد شد.')) {
+    return;
+  }
+  try {
+    let sourceData = window.INITIAL_PERSONNEL_DATA;
+    if (!sourceData || !sourceData.length) {
+      const res = await fetch('/personnel-data.json');
+      sourceData = await res.json();
+    }
+    await clearPersonnelDB();
+    await saveMultiplePersonnelToDB(sourceData);
+    window.AppState.personnel = [...sourceData];
+    window.AppState.personnelMap = new Map();
+    window.AppState.personnel.forEach((p) => {
+      if (p && p.code) {
+        const clean = String(p.code).trim();
+        window.AppState.personnelMap.set(clean, p);
+        const unpadded = clean.replace(/^0+/, '');
+        if (unpadded && unpadded !== clean) {
+          window.AppState.personnelMap.set(unpadded, p);
+        }
+        const padded7 = clean.padStart(7, '0');
+        if (padded7 !== clean) {
+          window.AppState.personnelMap.set(padded7, p);
+        }
+      }
+    });
+    window.AppState.personnelCurrentPage = 1;
+    renderPersonnelTable();
+    showToast('بانک اطلاعات پرسنل با موفقیت به فایل اولیه اکسل بازنشانی شد', 'success');
+  } catch (e) {
+    console.error('Error resetting personnel data:', e);
+    showToast('خطا در بازنشانی اطلاعات پرسنل', 'error');
+  }
+}
+
+function onPersonnelSearchInput(val) {
+  window.AppState.personnelSearchQuery = val || '';
+  window.AppState.personnelCurrentPage = 1;
+  const clearBtn = document.getElementById('clearPersonnelSearchBtn');
+  if (clearBtn) {
+    if (val) clearBtn.classList.remove('hidden');
+    else clearBtn.classList.add('hidden');
+  }
+  renderPersonnelTable();
+}
+
+function clearPersonnelSearch() {
+  const input = document.getElementById('personnelSearchInput');
+  if (input) input.value = '';
+  onPersonnelSearchInput('');
+}
+
+function onPersonnelPageSizeChange(size) {
+  window.AppState.personnelPageSize = Number(size) || 50;
+  window.AppState.personnelCurrentPage = 1;
+  renderPersonnelTable();
+}
+
+function goToPersonnelPage(page) {
+  window.AppState.personnelCurrentPage = Number(page);
+  renderPersonnelTable();
+}
+
+// تعاریف نام‌های مستعار برای حذف و سوئیچ تب‌ها
+async function deleteRecord(id) {
+  return confirmDeleteReport(id);
+}
+
+async function deleteAdmin(username) {
+  return confirmDeleteAdmin(username);
+}
+
+function showAdminTab(tabName) {
+  const user = window.AppState && window.AppState.currentUser;
+  const isAdmin = user && (user.username === 'admin' || user.isSuperAdmin);
+
+  const canOrg = isAdmin || !!(user && user.permissions && user.permissions.orgManage);
+  const canAdmin = isAdmin || !!(user && user.permissions && user.permissions.adminManage);
+  const canBackup = isAdmin || !!(user && user.permissions && user.permissions.backup);
+  const canPersonnel = isAdmin || !!(user && user.permissions && user.permissions.personnelManage);
+
+  if (tabName === 'orgManage' && !canOrg) tabName = 'reports';
+  if (tabName === 'adminManage' && !canAdmin) tabName = 'reports';
+  if (tabName === 'backup' && !canBackup) tabName = 'reports';
+  if (tabName === 'personnelManage' && !canPersonnel) tabName = 'reports';
+
+  const tabs = ['adminTabReports', 'adminTabOrg', 'adminTabManage', 'adminTabBackup', 'adminTabPersonnel'];
+  tabs.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.classList.add('hidden');
+  });
+
+  const inactiveClass = 'px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 border-transparent text-slate-400 hover:text-slate-200 flex items-center gap-1.5 transition';
+  const activeClass = 'px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 border-amber-500 text-amber-400 flex items-center gap-1.5 transition';
+
+  const btnReports = document.getElementById('tabBtnReports');
+  const btnOrg = document.getElementById('tabBtnOrgManage');
+  const btnManage = document.getElementById('tabBtnAdminManage');
+  const btnBackup = document.getElementById('tabBtnBackup');
+  const btnPersonnel = document.getElementById('tabBtnPersonnelManage');
+
+  if (btnReports) btnReports.className = inactiveClass;
+  if (btnOrg) btnOrg.className = inactiveClass;
+  if (btnManage) btnManage.className = inactiveClass;
+  if (btnBackup) btnBackup.className = inactiveClass;
+  if (btnPersonnel) btnPersonnel.className = inactiveClass;
+
+  if (tabName === 'reports') {
+    const el = document.getElementById('adminTabReports');
+    if (el) el.classList.remove('hidden');
+    if (btnReports) btnReports.className = activeClass;
+  } else if (tabName === 'orgManage' && canOrg) {
+    const el = document.getElementById('adminTabOrg');
+    if (el) el.classList.remove('hidden');
+    if (btnOrg) btnOrg.className = activeClass;
+    if (typeof renderOrgManagementUI === 'function') renderOrgManagementUI();
+  } else if (tabName === 'adminManage' && canAdmin) {
+    const el = document.getElementById('adminTabManage');
+    if (el) el.classList.remove('hidden');
+    if (btnManage) btnManage.className = activeClass;
+  } else if (tabName === 'backup' && canBackup) {
+    const el = document.getElementById('adminTabBackup');
+    if (el) el.classList.remove('hidden');
+    if (btnBackup) btnBackup.className = activeClass;
+  } else if (tabName === 'personnelManage' && canPersonnel) {
+    const el = document.getElementById('adminTabPersonnel');
+    if (el) el.classList.remove('hidden');
+    if (btnPersonnel) btnPersonnel.className = activeClass;
+    renderPersonnelTable();
+  }
+}
+
+// صادر کردن تمام توابع عمومی و رویدادها در شیء پنجره مرورگر (window)
+window.addSelectedActivity = addSelectedActivity;
+window.removeAddedActivity = removeAddedActivity;
+window.renderAddedActivitiesList = renderAddedActivitiesList;
+window.handleActivityChange = handleActivityChange;
+window.openPhotoViewerModal = openPhotoViewerModal;
+window.closePhotoViewerModal = closePhotoViewerModal;
+window.removeSinglePhoto = removeSinglePhoto;
+window.removeAllCapturedPhotos = removeAllCapturedPhotos;
+window.removeCapturedImage = removeCapturedImage;
+window.renderImagePreview = renderImagePreview;
+window.addColleague = addColleague;
+window.removeColleague = removeColleague;
+window.handleColleagueInput = handleColleagueInput;
+window.findPersonnelByCode = findPersonnelByCode;
+window.renderColleaguesList = renderColleaguesList;
+window.clearQrField = clearQrField;
+window.handleAsettInput = handleAsettInput;
+window.openQrScannerModal = openQrScannerModal;
+window.closeQrScannerModal = closeQrScannerModal;
+window.openModal = openModal;
+window.closeModal = closeModal;
+window.toggleTheme = toggleTheme;
+window.updateGPSLocation = updateGPSLocation;
+window.startAutoGPS = startAutoGPS;
+window.switchToHomeView = switchToHomeView;
+window.syncPendingRecords = syncPendingRecords;
+window.exportToExcel = exportToExcel;
+window.printReportsAsPDF = printReportsAsPDF;
+window.exportFullBackup = exportFullBackup;
+window.resetAdminFilters = resetAdminFilters;
+window.resetOrgStructureToDefault = resetOrgStructureToDefault;
+window.handleAdminLogout = handleAdminLogout;
+window.openAdminAccess = openAdminAccess;
+window.closeAdminWelcomeBanner = closeAdminWelcomeBanner;
+window.showDetailModal = showDetailModal;
+window.deleteRecord = deleteRecord;
+window.confirmDeleteReport = confirmDeleteReport;
+window.deleteAdmin = deleteAdmin;
+window.confirmDeleteAdmin = confirmDeleteAdmin;
+window.toggleAdminPersonnelAccess = toggleAdminPersonnelAccess;
+window.handleDeleteSupervision = handleDeleteSupervision;
+window.handleEditSupervision = handleEditSupervision;
+window.handleDeleteUnit = handleDeleteUnit;
+window.handleEditUnit = handleEditUnit;
+window.showAdminTab = showAdminTab;
+window.renderPersonnelTable = renderPersonnelTable;
+window.toggleAddPersonnelForm = toggleAddPersonnelForm;
+window.handleNewPersonnelSubmit = handleNewPersonnelSubmit;
+window.confirmDeletePersonnel = confirmDeletePersonnel;
+window.confirmResetPersonnelData = confirmResetPersonnelData;
+window.onPersonnelSearchInput = onPersonnelSearchInput;
+window.clearPersonnelSearch = clearPersonnelSearch;
+window.onPersonnelPageSizeChange = onPersonnelPageSizeChange;
+window.goToPersonnelPage = goToPersonnelPage;
+window.switchInstallTab = switchInstallTab;
+window.handlePWAInstallClick = handlePWAInstallClick;
+window.triggerDirectInstall = triggerDirectInstall;
+window.dismissPWABanner = dismissPWABanner;
+

@@ -1,11 +1,12 @@
 {
   "id": "/",
-  "name": "ثبت گراف مدیریت اتوماسیون و ارتباطات",
-  "short_name": "ثبت گراف",
-  "description": "سامانه صنعتی ثبت گراف، گزارش‌های میدانی و تعمیرات اتوماسیون و ارتباطات با عملکرد کاملاً آفلاین",
-  "start_url": "./",
-  "scope": "./",
+  "name": "ثبت فعالیت ها",
+  "short_name": "ثبت فعالیت ها",
+  "description": "سامانه ثبت فعالیت‌ها - تهیه شده توسط مدیریت اتوماسیون و ارتباطات",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "window-controls-overlay", "minimal-ui"],
   "orientation": "portrait",
   "dir": "rtl",
   "lang": "fa",
@@ -14,16 +15,67 @@
   "categories": ["business", "productivity", "utilities"],
   "icons": [
     {
-      "src": "icon.svg",
-      "sizes": "192x192 512x512",
-      "type": "image/svg+xml",
+      "src": "/app-logo.png",
+      "sizes": "1254x1254",
+      "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "icon.svg",
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon.svg",
       "sizes": "512x512",
       "type": "image/svg+xml",
-      "purpose": "maskable"
+      "purpose": "any"
     }
-  ]
+  ],
+  "shortcuts": [
+    {
+      "name": "ثبت گزارش میدانی",
+      "short_name": "ثبت گزارش",
+      "description": "فرم ثبت گراف و گزارش تکنسین",
+      "url": "/#homeViewSection",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "پنل مدیریت سیستم",
+      "short_name": "مدیریت",
+      "description": "ورود به بخش مدیریت و خروجی اکسل",
+      "url": "/#adminAccess",
+      "icons": [
+        {
+          "src": "/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ],
+  "prefer_related_applications": false
 }
