@@ -3,12 +3,13 @@
  * طراحی شده برای کارکرد ۱۰۰٪ آفلاین بر روی اندروید، ویندوز و مرورگرهای مدرن (PWA)
  */
 
-const CACHE_NAME = 'automation-graph-pwa-v15';
+const CACHE_NAME = 'automation-graph-pwa-v24';
 const CORE_ASSETS = [
   '/',
   '/index.html',
   '/app.js',
   '/manifest.json',
+  '/xlsx.full.min.js',
   '/personnel-data.json',
   '/personnel-data.js',
   '/app-logo.png',
@@ -74,12 +75,18 @@ self.addEventListener('fetch', (event) => {
           return networkResponse;
         })
         .catch(async () => {
-          const cached = await caches.match(event.request);
+          const cached = await caches.match(event.request, { ignoreSearch: true });
           if (cached) return cached;
           if (event.request.mode === 'navigate') {
             return (await caches.match('/index.html')) || (await caches.match('/'));
           }
-          return (await caches.match('/app.js'));
+          if (url.pathname.includes('personnel-data')) {
+            return (await caches.match('/personnel-data.js')) || (await caches.match('/personnel-data.json'));
+          }
+          if (url.pathname.includes('xlsx')) {
+            return await caches.match('/xlsx.full.min.js');
+          }
+          return await caches.match('/app.js');
         })
     );
     return;

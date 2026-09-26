@@ -3,12 +3,16 @@
  * طراحی شده برای کارکرد ۱۰۰٪ آفلاین بر روی اندروید، ویندوز و مرورگرهای مدرن (PWA)
  */
 
-const CACHE_NAME = 'automation-graph-pwa-v12';
+const CACHE_NAME = 'automation-graph-pwa-v20';
 const CORE_ASSETS = [
   '/',
   '/index.html',
   '/app.js',
   '/manifest.json',
+  '/xlsx.full.min.js',
+  '/personnel-data.json',
+  '/personnel-data.js',
+  '/app-logo.png',
   '/icon.svg',
   '/icon-192.png',
   '/icon-512.png',
@@ -82,24 +86,23 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // برای سایر فایل‌ها (تصاویر، آیکون‌ها): Cache-First
+  // برای سایر فایل‌ها (تصاویر، آیکون‌ها): Network-First جهت دریافت سریع آخرین آیکون و سپس کش آفلاین
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) return cachedResponse;
-      return fetch(event.request)
-        .then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200) {
-            const copy = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-          }
-          return networkResponse;
-        })
-        .catch(() => {
-          if (event.request.destination === 'image') {
-            return caches.match('/icon-192.png') || caches.match('/icon.svg');
-          }
-        });
-    })
+    fetch(event.request)
+      .then((networkResponse) => {
+        if (networkResponse && networkResponse.status === 200) {
+          const copy = networkResponse.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        }
+        return networkResponse;
+      })
+      .catch(async () => {
+        const cached = await caches.match(event.request);
+        if (cached) return cached;
+        if (event.request.destination === 'image') {
+          return (await caches.match('/icon-192.png')) || (await caches.match('/icon.svg'));
+        }
+      })
   );
 });
 
