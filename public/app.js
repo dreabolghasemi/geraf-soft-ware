@@ -6749,14 +6749,16 @@ function getStoredSupervisions() {
 }
 
 async function saveStoredSupervisions(list) {
+  if (!requireCloudAuth(true)) throw new Error('AUTH_REQUIRED');
   const c = getCloudDB();
-  if (c && typeof c.saveOrgStructure === 'function') {
-    await c.saveOrgStructure({
-      version: ORG_STRUCTURE_VERSION,
-      supervisions: list,
-      units: getStoredUnits(),
-    });
+  if (!c || typeof c.saveOrgStructure !== 'function') {
+    throw new Error('اتصال به پایگاه داده مرکزی برقرار نیست');
   }
+  await c.saveOrgStructure({
+    version: ORG_STRUCTURE_VERSION,
+    supervisions: list,
+    units: getStoredUnits(),
+  });
   populateOrgDropdowns();
   renderOrgManagementUI();
 }
@@ -6775,14 +6777,16 @@ function getStoredUnits() {
 }
 
 async function saveStoredUnits(list) {
+  if (!requireCloudAuth(true)) throw new Error('AUTH_REQUIRED');
   const c = getCloudDB();
-  if (c && typeof c.saveOrgStructure === 'function') {
-    await c.saveOrgStructure({
-      version: ORG_STRUCTURE_VERSION,
-      supervisions: getStoredSupervisions(),
-      units: list,
-    });
+  if (!c || typeof c.saveOrgStructure !== 'function') {
+    throw new Error('اتصال به پایگاه داده مرکزی برقرار نیست');
   }
+  await c.saveOrgStructure({
+    version: ORG_STRUCTURE_VERSION,
+    supervisions: getStoredSupervisions(),
+    units: list,
+  });
   populateOrgDropdowns();
   renderOrgManagementUI();
 }
@@ -7808,14 +7812,25 @@ async function handleNewPersonnelSubmit(e) {
     e.preventDefault();
     e.stopPropagation();
   }
+  if (!canAccessPersonnelManage()) {
+    showToast('دسترسی غیرمجاز: شما مجوز مدیریت بانک پرسنل را ندارید', 'error');
+    return;
+  }
+  if (!requireCloudAuth(true)) return;
+  const c = getCloudDB();
+  if (!c || typeof c.savePersonnelOverride !== 'function') {
+    showToast('اتصال به پایگاه داده مرکزی برقرار نیست', 'error');
+    return;
+  }
+
   const codeInput = document.getElementById('newPersonnelCode');
   const nameInput = document.getElementById('newPersonnelName');
   if (!codeInput || !nameInput) return;
 
-  const code = codeInput.value.trim();
+  const code = toEnglishDigits(codeInput.value.trim()).replace(/\D/g, '');
   const name = nameInput.value.trim();
   if (!code || !name) {
-    showToast('شماره پرسنلی و نام پرسنل الزامی است', 'error');
+    showToast('شماره پرسنلی معتبر (عددی) و نام پرسنل الزامی است', 'error');
     return;
   }
 
@@ -7828,7 +7843,14 @@ async function handleNewPersonnelSubmit(e) {
 
   const newRecord = { code, name };
 
-  // ۱. به‌روزرسانی فوری در حافظه رم
+  try {
+    await c.savePersonnelOverride(newRecord, 'upsert');
+  } catch (dbErr) {
+    console.warn('Cloud save new personnel error:', dbErr);
+    showToast('خطا در ذخیره پرسنل جدید روی سرور مرکزی (تغییری ذخیره نشد)', 'error');
+    return;
+  }
+
   if (!window.AppState.personnel) window.AppState.personnel = [];
   const existingIdx = window.AppState.personnel.findIndex((p) => String(p.code).trim() === code);
   if (existingIdx >= 0) {
@@ -7845,12 +7867,10 @@ async function handleNewPersonnelSubmit(e) {
     if (padded7) window.AppState.personnelMap.set(padded7, newRecord);
   }
 
-  // ۲. پاک‌سازی فرم و بستن پنجره
   codeInput.value = '';
   nameInput.value = '';
   toggleAddPersonnelForm(false);
 
-  // انتقال به صفحه اول بدون فیلتر جهت مشاهده رکورد جدید
   window.AppState.personnelSearchQuery = '';
   const searchInput = document.getElementById('personnelSearchInput');
   if (searchInput) searchInput.value = '';
@@ -7859,23 +7879,23 @@ async function handleNewPersonnelSubmit(e) {
   window.AppState.personnelCurrentPage = 1;
 
   renderPersonnelTable();
-  showToast(`پرسنل «${name}» با شماره ${code} با موفقیت ثبت شد`, 'success');
-
-  // ۳. ذخیره تغییر پرسنل در پایگاه داده مرکزی
-  const c = getCloudDB();
-  if (c && typeof c.savePersonnelOverride === 'function') {
-    try {
-      await c.savePersonnelOverride(newRecord, 'upsert');
-    } catch (dbErr) {
-      console.warn('Cloud save new personnel error:', dbErr);
-      showToast('خطا در ذخیره پرسنل جدید روی سرور مرکزی', 'error');
-    }
-  }
+  showToast(`پرسنل «${name}» با شماره ${code} با موفقیت روی سرور مرکزی ثبت شد`, 'success');
 }
 
 async function editPersonnelRecord(code) {
   if (!code) return;
-  const cleanCode = String(code).trim();
+  if (!canAccessPersonnelManage()) {
+    showToast('دسترسی غیرمجاز: شما مجوز ویرایش پرسنل را ندارید', 'error');
+    return;
+  }
+  if (!requireCloudAuth(true)) return;
+  const c = getCloudDB();
+  if (!c || typeof c.savePersonnelOverride !== 'function') {
+    showToast('اتصال به پایگاه داده مرکزی برقرار نیست', 'error');
+    return;
+  }
+
+  const cleanCode = toEnglishDigits(String(code).trim());
   const p = (window.AppState.personnelMap && window.AppState.personnelMap.get(cleanCode)) ||
             (window.AppState.personnel || []).find((x) => String(x.code).trim() === cleanCode);
   if (!p) return;
@@ -7888,26 +7908,34 @@ async function editPersonnelRecord(code) {
     return;
   }
 
-  p.name = trimmed;
-  if (window.AppState.personnelMap) {
-    window.AppState.personnelMap.set(cleanCode, p);
-  }
-  renderPersonnelTable();
-  const c = getCloudDB();
-  if (c && typeof c.savePersonnelOverride === 'function') {
-    try {
-      await c.savePersonnelOverride(p, 'upsert');
-      showToast(`نام پرسنل با موفقیت در سرور مرکزی به «${trimmed}» به‌روزرسانی شد`, 'success');
-    } catch (e) {
-      console.warn(e);
-      showToast('خطا در ذخیره‌سازی تغییر پرسنل روی سرور مرکزی', 'error');
+  try {
+    await c.savePersonnelOverride({ ...p, name: trimmed }, 'upsert');
+    p.name = trimmed;
+    if (window.AppState.personnelMap) {
+      window.AppState.personnelMap.set(cleanCode, p);
     }
+    renderPersonnelTable();
+    showToast(`نام پرسنل با موفقیت در سرور مرکزی به «${trimmed}» به‌روزرسانی شد`, 'success');
+  } catch (e) {
+    console.warn(e);
+    showToast('خطا در ذخیره‌سازی تغییر پرسنل روی سرور مرکزی', 'error');
   }
 }
 
 async function confirmDeletePersonnel(code) {
   if (!code) return;
-  const cleanCode = String(code).trim();
+  if (!canAccessPersonnelManage()) {
+    showToast('دسترسی غیرمجاز: شما مجوز حذف پرسنل را ندارید', 'error');
+    return;
+  }
+  if (!requireCloudAuth(true)) return;
+  const c = getCloudDB();
+  if (!c || typeof c.savePersonnelOverride !== 'function') {
+    showToast('اتصال به پایگاه داده مرکزی برقرار نیست', 'error');
+    return;
+  }
+
+  const cleanCode = toEnglishDigits(String(code).trim());
   const p = (window.AppState.personnelMap && window.AppState.personnelMap.get(cleanCode)) ||
             (window.AppState.personnel || []).find((x) => String(x.code).trim() === cleanCode);
   const name = p ? p.name : cleanCode;
@@ -7916,7 +7944,14 @@ async function confirmDeletePersonnel(code) {
     return;
   }
 
-  // ۱. حذف فوری از حافظه رم جهت پاسخدهی آنی
+  try {
+    await c.savePersonnelOverride({ code: cleanCode, name }, 'delete');
+  } catch (dbErr) {
+    console.warn('Cloud delete personnel error:', dbErr);
+    showToast('خطا در ثبت حذف پرسنل روی سرور مرکزی', 'error');
+    return;
+  }
+
   window.AppState.personnel = (window.AppState.personnel || []).filter((item) => String(item.code).trim() !== cleanCode);
   if (window.AppState.personnelMap) {
     window.AppState.personnelMap.delete(cleanCode);
@@ -7926,20 +7961,8 @@ async function confirmDeletePersonnel(code) {
     if (padded7) window.AppState.personnelMap.delete(padded7);
   }
 
-  // ۲. رندر مجدد جدول و نمایش پیام به کاربر
   renderPersonnelTable();
-  showToast(`پرسنل «${name}» (${cleanCode}) از لیست حذف گردید`, 'info');
-
-  // ۳. ثبت حذف در پایگاه داده مرکزی
-  const c = getCloudDB();
-  if (c && typeof c.savePersonnelOverride === 'function') {
-    try {
-      await c.savePersonnelOverride({ code: cleanCode, name }, 'delete');
-    } catch (dbErr) {
-      console.warn('Cloud delete personnel error:', dbErr);
-      showToast('خطا در ثبت حذف پرسنل روی سرور مرکزی', 'error');
-    }
-  }
+  showToast(`پرسنل «${name}» (${cleanCode}) با موفقیت از سرور مرکزی حذف گردید`, 'info');
 }
 
 async function confirmResetPersonnelData() {

@@ -1145,9 +1145,12 @@ export async function savePersonnelOverride(
   action: 'upsert' | 'delete' = 'upsert'
 ): Promise<void> {
   const user = requireVerifiedUser();
-  const code = sStr(record.code, 32).replace(/\D/g, '');
+  const rawCode = sStr(record.code, 32)
+    .replace(/[۰-۹]/g, (d) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(d)))
+    .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)));
+  const code = rawCode.replace(/\D/g, '');
   if (!code || !VALID_ID_REGEX.test(code)) {
-    throw new Error('شماره پرسنلی معتبر نیست');
+    throw new Error('شماره پرسنلی معتبر نیست (از ارقام لاتین/فارسی استفاده کنید)');
   }
   const path = `personnel_overrides/${code}`;
   const docRef = doc(db, 'personnel_overrides', code);
