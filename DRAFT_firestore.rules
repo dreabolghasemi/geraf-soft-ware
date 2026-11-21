@@ -1,0 +1,452 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Default-Deny Catch-All Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================
+    // Global Hardened Primitives (Zero-Trust & Cost-Safe)
+    // =========================================================
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Pure token-based bootstrapped admin (zero DB lookups; safe inside allow list)
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'eabolghasemi2@gmail.com';
+    }
+
+    // Full DB-backed admin checks (use ONLY in get/create/update/delete, NEVER in allow list)
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function getAdminDoc() {
+      return get(/databases/$(database)/documents/admins/$(request.auth.uid)).data;
+    }
+
+    function isSuperAdminUser() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+        getAdminDoc().isSuperAdmin == true
+      );
+    }
+
+    function hasAdminModule(permKey) {
+      return isSuperAdminUser() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+        getAdminDoc().permissions[permKey] == true
+      );
+    }
+
+    // =========================================================
+    // Validation Blueprints (Anti-Update-Gap Helpers)
+    // =========================================================
+    function isValidUserProfile(data) {
+      return data is map &&
+        data.keys().hasAll(['uid', 'personnelId', 'name', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'uid', 'personnelId', 'firstName', 'lastName', 'name',
+          'fatherName', 'management', 'supervision', 'unit', 'role',
+          'email', 'createdAt', 'updatedAt'
+        ]) &&
+        data.uid is string && data.uid == request.auth.uid && data.uid.size() <= 128 &&
+        data.personnelId is string && data.personnelId.size() >= 1 && data.personnelId.size() <= 32 && data.personnelId.matches('^[0-9]{1,20}$') &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
+        (!('firstName' in data) || (data.firstName is string && data.firstName.size() <= 80)) &&
+        (!('lastName' in data) || (data.lastName is string && data.lastName.size() <= 80)) &&
+        (!('fatherName' in data) || (data.fatherName is string && data.fatherName.size() <= 80)) &&
+        (!('management' in data) || (data.management is string && data.management.size() <= 160)) &&
+        (!('supervision' in data) || (data.supervision is string && data.supervision.size() <= 120)) &&
+        (!('unit' in data) || (data.unit is string && data.unit.size() <= 120)) &&
+        (!('role' in data) || (data.role is string && data.role.size() <= 160)) &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 160)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminPermissions(perms) {
+      return perms is map &&
+        perms.keys().hasAll(['orgManage', 'adminManage', 'backup', 'personnelManage', 'assetRebuildable']) &&
+        perms.keys().hasOnly(['orgManage', 'adminManage', 'backup', 'personnelManage', 'assetRebuildable']) &&
+        perms.orgManage is bool &&
+        perms.adminManage is bool &&
+        perms.backup is bool &&
+        perms.personnelManage is bool &&
+        perms.assetRebuildable is bool;
+    }
+
+    function isValidAdminUser(data) {
+      return data is map &&
+        data.keys().hasAll(['uid', 'username', 'fullName', 'supervision', 'unit', 'permissions', 'createdByUid', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'uid', 'email', 'username', 'fullName', 'supervision',
+          'unit', 'isSuperAdmin', 'permissions', 'createdByUid',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.uid) &&
+        data.username is string && data.username.size() >= 1 && data.username.size() <= 64 && data.username.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 160 &&
+        data.supervision is string && data.supervision.size() >= 1 && data.supervision.size() <= 120 &&
+        data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 120 &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 160)) &&
+        (!('isSuperAdmin' in data) || data.isSuperAdmin is bool) &&
+        isValidAdminPermissions(data.permissions) &&
+        isValidId(data.createdByUid) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidOrgStructure(data) {
+      return data is map &&
+        data.keys().hasAll(['version', 'supervisions', 'units', 'adminUids', 'updatedByUid', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['version', 'supervisions', 'units', 'adminUids', 'updatedByUid', 'createdAt', 'updatedAt']) &&
+        data.version is string && data.version.size() >= 1 && data.version.size() <= 80 &&
+        data.supervisions is list && data.supervisions.size() <= 100 &&
+        (data.supervisions.size() == 0 || (data.supervisions[0] is string && data.supervisions[0].size() <= 150)) &&
+        data.units is list && data.units.size() <= 250 &&
+        (data.units.size() == 0 || (
+          data.units[0] is map &&
+          data.units[0].keys().hasAll(['name', 'supervision']) &&
+          data.units[0].keys().hasOnly(['name', 'supervision']) &&
+          data.units[0].name is string && data.units[0].name.size() <= 150 &&
+          data.units[0].supervision is string && data.units[0].supervision.size() <= 150
+        )) &&
+        data.adminUids is list && data.adminUids.size() <= 20 &&
+        (data.adminUids.size() == 0 || (data.adminUids[0] is string && data.adminUids[0].size() <= 128)) &&
+        data.updatedByUid is string && data.updatedByUid == request.auth.uid && data.updatedByUid.size() <= 128 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAssetCatalogShard(data) {
+      return data is map &&
+        data.keys().hasAll(['items', 'count', 'updatedByUid', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['items', 'count', 'updatedByUid', 'createdAt', 'updatedAt']) &&
+        data.items is list && data.items.size() <= 500 &&
+        (data.items.size() == 0 || (
+          data.items[0] is map &&
+          data.items[0].keys().hasAll(['id', 'asset', 'rebuildable', 'supervision', 'unit']) &&
+          data.items[0].keys().hasOnly(['id', 'asset', 'rebuildable', 'description', 'supervision', 'unit', 'createdAt', 'importedFromExcel']) &&
+          data.items[0].id is string && data.items[0].id.size() >= 1 && data.items[0].id.size() <= 128 &&
+          data.items[0].asset is string && data.items[0].asset.size() >= 1 && data.items[0].asset.size() <= 200 &&
+          data.items[0].rebuildable is string && data.items[0].rebuildable.size() >= 1 && data.items[0].rebuildable.size() <= 200 &&
+          data.items[0].supervision is string && data.items[0].supervision.size() <= 150 &&
+          data.items[0].unit is string && data.items[0].unit.size() <= 150 &&
+          (!('description' in data.items[0]) || (data.items[0].description is string && data.items[0].description.size() <= 500)) &&
+          (!('createdAt' in data.items[0]) || (data.items[0].createdAt is string && data.items[0].createdAt.size() <= 64)) &&
+          (!('importedFromExcel' in data.items[0]) || data.items[0].importedFromExcel is bool)
+        )) &&
+        data.count is int && data.count == data.items.size() && data.count >= 0 && data.count <= 500 &&
+        data.updatedByUid is string && data.updatedByUid == request.auth.uid && data.updatedByUid.size() <= 128 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidGraphOperator(op) {
+      return op is map &&
+        op.keys().hasAll(['personnelId', 'name']) &&
+        op.keys().hasOnly(['personnelId', 'firstName', 'lastName', 'name', 'fatherName', 'management', 'supervision', 'unit', 'role']) &&
+        op.personnelId is string && op.personnelId.size() >= 1 && op.personnelId.size() <= 32 &&
+        op.name is string && op.name.size() >= 1 && op.name.size() <= 160 &&
+        (!('firstName' in op) || (op.firstName is string && op.firstName.size() <= 80)) &&
+        (!('lastName' in op) || (op.lastName is string && op.lastName.size() <= 80)) &&
+        (!('fatherName' in op) || (op.fatherName is string && op.fatherName.size() <= 80)) &&
+        (!('management' in op) || (op.management is string && op.management.size() <= 160)) &&
+        (!('supervision' in op) || (op.supervision is string && op.supervision.size() <= 120)) &&
+        (!('unit' in op) || (op.unit is string && op.unit.size() <= 120)) &&
+        (!('role' in op) || (op.role is string && op.role.size() <= 160));
+    }
+
+    function isValidConditionalFields(cf) {
+      return cf is map &&
+        cf.keys().hasOnly(['footage', 'equipmentId', 'deviceTag', 'referenceTool']) &&
+        (!('footage' in cf) || (cf.footage is string && cf.footage.size() <= 64)) &&
+        (!('equipmentId' in cf) || (cf.equipmentId is string && cf.equipmentId.size() <= 120)) &&
+        (!('deviceTag' in cf) || (cf.deviceTag is string && cf.deviceTag.size() <= 120)) &&
+        (!('referenceTool' in cf) || (cf.referenceTool is string && cf.referenceTool.size() <= 160));
+    }
+
+    function isValidLocationMap(loc) {
+      return loc is map &&
+        loc.keys().hasOnly(['lat', 'lng', 'accuracy', 'timestamp', 'updatedAt']) &&
+        (!('lat' in loc) || loc.lat == null || (loc.lat is string && loc.lat.size() <= 32)) &&
+        (!('lng' in loc) || loc.lng == null || (loc.lng is string && loc.lng.size() <= 32)) &&
+        (!('accuracy' in loc) || loc.accuracy == null || loc.accuracy is number) &&
+        (!('timestamp' in loc) || loc.timestamp == null || (loc.timestamp is string && loc.timestamp.size() <= 64)) &&
+        (!('updatedAt' in loc) || loc.updatedAt == null || (loc.updatedAt is string && loc.updatedAt.size() <= 32));
+    }
+
+    function isValidActivityItem(act) {
+      return act is map &&
+        act.keys().hasAll(['type']) &&
+        act.keys().hasOnly([
+          'type', 'rebuildable', 'conditionalFields', 'durationHours', 'durationMinutes',
+          'durationSeconds', 'durationTotalSeconds', 'durationFormatted', 'durationDigital', 'durationMethod'
+        ]) &&
+        act.type is string && act.type.size() >= 1 && act.type.size() <= 200 &&
+        (!('rebuildable' in act) || (act.rebuildable is string && act.rebuildable.size() <= 200)) &&
+        (!('conditionalFields' in act) || isValidConditionalFields(act.conditionalFields)) &&
+        (!('durationHours' in act) || (act.durationHours is int && act.durationHours >= 0 && act.durationHours <= 9999)) &&
+        (!('durationMinutes' in act) || (act.durationMinutes is int && act.durationMinutes >= 0 && act.durationMinutes <= 59)) &&
+        (!('durationSeconds' in act) || (act.durationSeconds is int && act.durationSeconds >= 0 && act.durationSeconds <= 59)) &&
+        (!('durationTotalSeconds' in act) || (act.durationTotalSeconds is int && act.durationTotalSeconds >= 0)) &&
+        (!('durationFormatted' in act) || (act.durationFormatted is string && act.durationFormatted.size() <= 120)) &&
+        (!('durationDigital' in act) || (act.durationDigital is string && act.durationDigital.size() <= 32)) &&
+        (!('durationMethod' in act) || (act.durationMethod is string && act.durationMethod.size() <= 64));
+    }
+
+    function isValidGraph(data) {
+      return data is map &&
+        data.keys().hasAll([
+          'authorUid', 'authorizedUids', 'timestamp', 'jalaliDate', 'jalaliTime', 'jalaliFull',
+          'operator', 'asett', 'rebuildable', 'photos', 'reportNotes', 'activityType',
+          'activities', 'conditionalFields', 'colleagues', 'location',
+          'durationHours', 'durationMinutes', 'durationSeconds', 'durationTotalSeconds',
+          'durationFormatted', 'durationDigital', 'durationMethod', 'syncStatus',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'authorUid', 'authorizedUids', 'timestamp', 'jalaliDate', 'jalaliTime', 'jalaliFull',
+          'operator', 'asett', 'rebuildable', 'photos', 'reportNotes', 'activityType',
+          'activities', 'conditionalFields', 'colleagues', 'location',
+          'durationHours', 'durationMinutes', 'durationSeconds', 'durationTotalSeconds',
+          'durationFormatted', 'durationDigital', 'durationMethod', 'syncStatus', 'syncedAt',
+          'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.authorUid) &&
+        data.authorizedUids is list && data.authorizedUids.size() <= 20 &&
+        (data.authorizedUids.size() == 0 || (data.authorizedUids[0] is string && data.authorizedUids[0].size() <= 128)) &&
+        data.timestamp is number && data.timestamp > 0 &&
+        data.jalaliDate is string && data.jalaliDate.size() <= 32 &&
+        data.jalaliTime is string && data.jalaliTime.size() <= 32 &&
+        data.jalaliFull is string && data.jalaliFull.size() <= 120 &&
+        isValidGraphOperator(data.operator) &&
+        data.asett is string && data.asett.size() <= 200 &&
+        data.rebuildable is string && data.rebuildable.size() >= 1 && data.rebuildable.size() <= 200 &&
+        data.photos is list && data.photos.size() <= 5 &&
+        (data.photos.size() == 0 || (data.photos[0] is string && data.photos[0].size() <= 650000)) &&
+        data.reportNotes is string && data.reportNotes.size() <= 2000 &&
+        data.activityType is string && data.activityType.size() >= 1 && data.activityType.size() <= 500 &&
+        data.activities is list && data.activities.size() >= 1 && data.activities.size() <= 30 &&
+        isValidActivityItem(data.activities[0]) &&
+        isValidConditionalFields(data.conditionalFields) &&
+        data.colleagues is list && data.colleagues.size() <= 20 &&
+        (data.colleagues.size() == 0 || (
+          (data.colleagues[0] is map && data.colleagues[0].keys().hasOnly(['code', 'name'])) ||
+          (data.colleagues[0] is string && data.colleagues[0].size() <= 160)
+        )) &&
+        isValidLocationMap(data.location) &&
+        data.durationHours is int && data.durationHours >= 0 && data.durationHours <= 9999 &&
+        data.durationMinutes is int && data.durationMinutes >= 0 && data.durationMinutes <= 59 &&
+        data.durationSeconds is int && data.durationSeconds >= 0 && data.durationSeconds <= 59 &&
+        data.durationTotalSeconds is int && data.durationTotalSeconds >= 0 &&
+        data.durationFormatted is string && data.durationFormatted.size() <= 120 &&
+        data.durationDigital is string && data.durationDigital.size() <= 32 &&
+        data.durationMethod is string && data.durationMethod.size() <= 64 &&
+        data.syncStatus in ['synced', 'pending'] &&
+        (!('syncedAt' in data) || data.syncedAt == null || (data.syncedAt is string && data.syncedAt.size() <= 64)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPersonnelOverride(data, codePath) {
+      return data is map &&
+        data.keys().hasAll(['code', 'action', 'name', 'updatedByUid', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'code', 'action', 'name', 'nationalId', 'mobile',
+          'management', 'supervision', 'serviceUnit', 'jobTitle',
+          'updatedByUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.code is string && data.code == codePath && data.code.size() >= 1 && data.code.size() <= 32 &&
+        data.action in ['upsert', 'delete'] &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
+        (!('nationalId' in data) || (data.nationalId is string && data.nationalId.size() <= 20)) &&
+        (!('mobile' in data) || (data.mobile is string && data.mobile.size() <= 24)) &&
+        (!('management' in data) || (data.management is string && data.management.size() <= 160)) &&
+        (!('supervision' in data) || (data.supervision is string && data.supervision.size() <= 120)) &&
+        (!('serviceUnit' in data) || (data.serviceUnit is string && data.serviceUnit.size() <= 120)) &&
+        (!('jobTitle' in data) || (data.jobTitle is string && data.jobTitle.size() <= 160)) &&
+        data.updatedByUid is string && data.updatedByUid == request.auth.uid && data.updatedByUid.size() <= 128 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    // =========================================================
+    // Collection Match Blocks
+    // =========================================================
+
+    // Health check connection probe (single fixed doc, empty)
+    match /test/{docId} {
+      allow get: if isSignedIn() && isValidId(docId) && docId == 'connection';
+      allow list, create, update, delete: if false;
+    }
+
+    // 1. User Operator Profiles (PII isolated to owner or admin; never listed)
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if false;
+      allow create: if isOwner(userId) && isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isOwner(userId) && isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'personnelId', 'firstName', 'lastName', 'name', 'fatherName',
+          'management', 'supervision', 'unit', 'role', 'email', 'updatedAt'
+        ]);
+      allow delete: if isValidId(userId) && (isOwner(userId) || hasAdminModule('adminManage'));
+    }
+
+    // 2. Admin Registry (PII isolated; writes strictly gated by adminManage module)
+    match /admins/{adminUid} {
+      allow get: if isValidId(adminUid) && (isOwner(adminUid) || hasAdminModule('adminManage'));
+      allow list: if isBootstrappedAdmin() || (
+        isVerifiedUser() && (existing().uid == request.auth.uid || existing().createdByUid == request.auth.uid)
+      );
+      allow create: if isValidId(adminUid) && hasAdminModule('adminManage') &&
+        isValidAdminUser(incoming()) &&
+        incoming().uid == adminUid &&
+        incoming().createdByUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(adminUid) && hasAdminModule('adminManage') &&
+        isValidAdminUser(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().username == existing().username &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'fullName', 'email', 'supervision', 'unit', 'isSuperAdmin', 'permissions', 'updatedAt'
+        ]);
+      allow delete: if isValidId(adminUid) && hasAdminModule('adminManage');
+    }
+
+    // 3. Organization Structure Singleton ('main')
+    match /org_structure/{docId} {
+      allow get: if isVerifiedUser() && isValidId(docId) && docId == 'main';
+      allow list: if false;
+      allow create: if (hasAdminModule('orgManage') || hasAdminModule('adminManage')) &&
+        isValidId(docId) && docId == 'main' &&
+        isValidOrgStructure(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if (hasAdminModule('orgManage') || hasAdminModule('adminManage')) &&
+        isValidId(docId) && docId == 'main' &&
+        isValidOrgStructure(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'version', 'supervisions', 'units', 'adminUids', 'updatedByUid', 'updatedAt'
+        ]);
+      allow delete: if false;
+    }
+
+    // 4. Equipment & Rebuildable Catalog Shards ('assets_0' .. 'assets_9')
+    match /org_catalog/{shardId} {
+      allow get: if isVerifiedUser() && isValidId(shardId) && shardId.matches('^assets_[0-9]$');
+      allow list: if false;
+      allow create: if hasAdminModule('assetRebuildable') &&
+        isValidId(shardId) && shardId.matches('^assets_[0-9]$') &&
+        isValidAssetCatalogShard(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if hasAdminModule('assetRebuildable') &&
+        isValidId(shardId) && shardId.matches('^assets_[0-9]$') &&
+        isValidAssetCatalogShard(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'items', 'count', 'updatedByUid', 'updatedAt'
+        ]);
+      allow delete: if hasAdminModule('assetRebuildable') && isValidId(shardId) && shardId.matches('^assets_[0-9]$');
+    }
+
+    // 5. Activity Graph Records
+    match /graphs/{graphId} {
+      allow get: if isVerifiedUser() && isValidId(graphId) && (
+        existing().authorUid == request.auth.uid ||
+        isAdmin() ||
+        (existing().authorizedUids is list && request.auth.uid in existing().authorizedUids)
+      );
+      allow list: if isVerifiedUser() && (
+        existing().authorUid == request.auth.uid ||
+        isBootstrappedAdmin() ||
+        (existing().authorizedUids is list && request.auth.uid in existing().authorizedUids)
+      );
+      allow create: if isVerifiedUser() && isValidId(graphId) &&
+        isValidGraph(incoming()) &&
+        incoming().authorUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() && isValidId(graphId) &&
+        isValidGraph(incoming()) &&
+        incoming().authorUid == existing().authorUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isSuperAdminUser() ||
+          hasAdminModule('backup') ||
+          (
+            existing().authorUid == request.auth.uid &&
+            existing().syncStatus != 'synced' &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['syncStatus', 'syncedAt', 'reportNotes', 'updatedAt'])
+          )
+        );
+      allow delete: if isVerifiedUser() && isValidId(graphId) && (
+        isAdmin() || existing().authorUid == request.auth.uid
+      );
+    }
+
+    // 6. Personnel Catalog Deltas (PII Strictly Restricted to personnelManage Admins)
+    match /personnel_overrides/{personnelCode} {
+      allow get: if isValidId(personnelCode) && hasAdminModule('personnelManage');
+      allow list: if isBootstrappedAdmin();
+      allow create: if isValidId(personnelCode) && hasAdminModule('personnelManage') &&
+        isValidPersonnelOverride(incoming(), personnelCode) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(personnelCode) && hasAdminModule('personnelManage') &&
+        isValidPersonnelOverride(incoming(), personnelCode) &&
+        incoming().code == existing().code &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'action', 'name', 'nationalId', 'mobile', 'management',
+          'supervision', 'serviceUnit', 'jobTitle', 'updatedByUid', 'updatedAt'
+        ]);
+      allow delete: if isValidId(personnelCode) && hasAdminModule('personnelManage');
+    }
+  }
+}

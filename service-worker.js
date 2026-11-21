@@ -4,7 +4,7 @@
  */
 
 // نسخه سراسری پروژه - با تغییر این متغیر، اپلیکیشن‌های نصب‌شده قدیمی نسخه جدید را شناسایی و ارتقا می‌دهند
-var APP_VERSION = '3.1.0';
+var APP_VERSION = '3.2.0';
 var CACHE_NAME = `automation-graph-pwa-v${APP_VERSION}`;
 var CORE_ASSETS = [
   '/',
@@ -61,6 +61,7 @@ self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
   const url = new URL(event.request.url);
+  if (url.origin !== self.location.origin) return;
 
   // برای فایل‌های کد (JS, HTML) و ناوبری: ابتدا شبکه، در صورت قطعی اینترنت کش محلی (Network-First)
   if (

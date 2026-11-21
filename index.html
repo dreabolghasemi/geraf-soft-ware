@@ -76,6 +76,12 @@
     window.onPersonnelPageSizeChange = window.onPersonnelPageSizeChange || function() {};
     window.goToPersonnelPage = window.goToPersonnelPage || function() {};
     window.renderPersonnelTable = window.renderPersonnelTable || function() {};
+    window.handleCloudGoogleSignIn = window.handleCloudGoogleSignIn || function() {};
+    window.handleCloudGoogleSignOut = window.handleCloudGoogleSignOut || function() {};
+    window.handleCloudAuthAction = window.handleCloudAuthAction || function() {};
+    window.copyMyCloudUid = window.copyMyCloudUid || function() {};
+    window.loginAdminWithVerifiedGoogle = window.loginAdminWithVerifiedGoogle || function() {};
+    window.updateCloudAuthUI = window.updateCloudAuthUI || function() {};
 
     // توابع کرنومتر و ماژول زمان جهت جلوگیری از خطا قبل از لود کامل اسکریپت
     window.toggleStopwatchPanel = window.toggleStopwatchPanel || function() {
@@ -976,7 +982,7 @@
             </h1>
             <button type="button" onclick="checkAppUpdate(true)" class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 transition cursor-pointer shadow-sm" title="نسخه پروژه - کلیک برای بررسی بروزرسانی آنلاین">
               <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span id="appHeaderVersionBadge">v3.1.0</span>
+              <span id="appHeaderVersionBadge">v3.2.0</span>
             </button>
           </div>
           <button type="button" onclick="openAboutSystemPage()" class="text-[11px] sm:text-xs text-amber-300 hover:text-amber-200 font-semibold tracking-normal mt-0.5 transition inline-flex items-center gap-1 cursor-pointer group text-right active:scale-95" style="text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);" title="درباره سامانه و شناسنامه نرم‌افزار (کلیک کنید)">
@@ -988,6 +994,12 @@
 
       <!-- کنترل‌های هدر: وضعیت شبکه و صف آفلاین -->
       <div class="flex items-center gap-2">
+        <!-- دکمه وضعیت اتصال ابری / ورود گوگل -->
+        <button id="headerCloudAuthBtn" type="button" onclick="handleCloudAuthAction()" class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/40 shadow-sm transition active:scale-95" title="وضعیت اتصال به پایگاه داده مرکزی">
+          <span id="headerCloudAuthDot" class="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
+          <span id="headerCloudAuthText" class="hidden sm:inline">اتصال مرکزی</span>
+        </button>
+
         <!-- وضعیت آنلاین/آفلاین (عبارت آنلاین طبق درخواست حذف شد و نشانگر تنها در حالت قطعی نمایش داده می‌شود) -->
         <div id="networkStatusBadge" class="hidden inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-300 shadow-sm" title="وضعیت ارتباط با شبکه">
           <span id="networkStatusDot" class="w-2 h-2 rounded-full bg-slate-400"></span>
@@ -1050,6 +1062,28 @@
        بخش اول: صفحه ثبت گراف (صفحه اصلی - Home View)
        ========================================================================= -->
   <main id="homeViewSection" class="flex-1 max-w-4xl w-full mx-auto p-3 sm:p-5 space-y-4">
+
+    <!-- نوار اتصال به پایگاه داده مرکزی (ذخیره‌سازی متمرکز بدون دیتابیس محلی) -->
+    <div id="cloudAuthStatusBar" class="bg-slate-900/90 rounded-2xl p-3 sm:px-4 border border-cyan-500/30 shadow-lg flex flex-col sm:flex-row items-center justify-between gap-2.5 text-xs">
+      <div class="flex items-center gap-2.5 text-center sm:text-right">
+        <span id="cloudStatusIndicatorDot" class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse shrink-0"></span>
+        <div>
+          <div id="cloudStatusTitle" class="font-extrabold text-slate-100">اتصال به پایگاه داده مرکزی سایت</div>
+          <div id="cloudStatusSubtitle" class="text-[11px] text-slate-400">برای ذخیره و همگام‌سازی مستقیم اطلاعات روی سرور مرکزی، با حساب گوگل وارد شوید.</div>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        <button id="cloudCopyUidBtn" type="button" onclick="copyMyCloudUid()" class="hidden px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 text-[11px] font-mono transition" title="کپی شناسه یکتای کاربری گوگل (UID)">
+          کپی UID
+        </button>
+        <button id="cloudSignInBtn" type="button" onclick="handleCloudGoogleSignIn()" class="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black text-xs shadow transition active:scale-95 cursor-pointer">
+          ورود با حساب گوگل
+        </button>
+        <button id="cloudSignOutBtn" type="button" onclick="handleCloudGoogleSignOut()" class="hidden px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-red-950/70 text-slate-300 hover:text-red-300 border border-slate-700 hover:border-red-700/60 font-bold text-xs transition cursor-pointer">
+          خروج
+        </button>
+      </div>
+    </div>
 
     <!-- کارت ۱: مدیریت اشخاص و اطلاعات مجری (دکمه و خلاصه پرسنلی) -->
     <div id="operatorMainCard" class="bg-slate-900/90 rounded-2xl p-3.5 sm:p-4 border border-slate-800 shadow-lg relative overflow-hidden transition-all duration-300">
@@ -1946,8 +1980,19 @@
                 <input type="text" id="newAdminUsername" required placeholder="مثال: ahmadi" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-slate-100 outline-none">
               </div>
               <div class="space-y-1">
-                <label for="newAdminPassword" class="block text-xs text-slate-300">کلمه عبور:</label>
-                <input type="password" id="newAdminPassword" required placeholder="رمز عبور..." class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 outline-none">
+                <label for="newAdminPassword" class="block text-xs text-slate-300">کلمه عبور (اختیاری - محلی):</label>
+                <input type="password" id="newAdminPassword" placeholder="اختیاری (احراز هویت اصلی با گوگل)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 outline-none">
+              </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div class="space-y-1">
+                <label for="newAdminFirebaseUid" class="block text-xs text-slate-300">شناسه گوگل (Firebase UID):</label>
+                <input type="text" id="newAdminFirebaseUid" placeholder="UID حساب گوگل برای دسترسی مرکزی..." class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-cyan-300 outline-none">
+              </div>
+              <div class="space-y-1">
+                <label for="newAdminEmail" class="block text-xs text-slate-300">ایمیل گوگل مدیر (اختیاری):</label>
+                <input type="email" id="newAdminEmail" placeholder="name@gmail.com" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs font-mono text-slate-100 outline-none">
               </div>
             </div>
 
@@ -2422,6 +2467,13 @@
         <p class="text-xs text-slate-400">احراز هویت و دسترسی به سامانه مدیریت</p>
       </div>
 
+      <div id="googleAdminLoginBox" class="hidden space-y-2 pb-3 border-b border-slate-800">
+        <button type="button" onclick="loginAdminWithVerifiedGoogle()" class="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-xl text-xs shadow transition flex items-center justify-center gap-2 cursor-pointer">
+          <span>ورود مستقیم با حساب گوگل تأییدشده</span>
+        </button>
+        <p id="googleAdminLoginHint" class="text-[11px] text-center text-emerald-300/90"></p>
+      </div>
+
       <form id="adminLoginForm" class="space-y-3">
         <div class="space-y-1">
           <label for="loginUsername" class="block text-xs font-bold text-slate-300">نام کاربری:</label>
@@ -2475,12 +2527,23 @@
           </div>
         </div>
 
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div class="space-y-1">
+            <label for="editAdminFirebaseUid" class="block text-xs font-bold text-slate-300">شناسه گوگل (Firebase UID):</label>
+            <input type="text" id="editAdminFirebaseUid" readonly class="w-full bg-slate-950/70 border border-slate-800 rounded-xl px-3 py-2 text-xs font-mono text-cyan-300/90 outline-none cursor-not-allowed select-all">
+          </div>
+          <div class="space-y-1">
+            <label for="editAdminEmail" class="block text-xs font-bold text-slate-300">ایمیل گوگل:</label>
+            <input type="email" id="editAdminEmail" placeholder="name@gmail.com" class="w-full bg-slate-950 border border-slate-700 focus:border-amber-500 rounded-xl px-3 py-2 text-xs font-mono text-slate-100 outline-none">
+          </div>
+        </div>
+
         <div class="space-y-1">
           <div class="flex items-center justify-between">
-            <label for="editAdminPassword" class="block text-xs font-bold text-slate-300">کلمه عبور جدید (اختیاری):</label>
-            <span class="text-[10px] text-slate-400">در صورت خالی ماندن، رمز قبلی حفظ می‌گردد</span>
+            <label for="editAdminPassword" class="block text-xs font-bold text-slate-300">کلمه عبور جدید (اختیاری - محلی):</label>
+            <span class="text-[10px] text-slate-400">در دیتابیس ابری ذخیره نمی‌شود</span>
           </div>
-          <input type="password" id="editAdminPassword" placeholder="اگر مایل به تغییر رمز عبور نیستید، این فیلد را خالی بگذارید..." class="w-full bg-slate-950 border border-slate-700 focus:border-amber-500 rounded-xl px-3 py-2 text-xs text-slate-100 outline-none">
+          <input type="password" id="editAdminPassword" placeholder="اختیاری (در صورت استفاده از احراز هویت گوگل نیازی نیست)" class="w-full bg-slate-950 border border-slate-700 focus:border-amber-500 rounded-xl px-3 py-2 text-xs text-slate-100 outline-none">
         </div>
 
         <!-- ۱. تعیین سرپرستی مجاز -->
@@ -3622,11 +3685,34 @@
     };
   </script>
 
+  <!-- مودال ورود گوگل جهت اتصال به پایگاه داده مرکزی -->
+  <div id="cloudAuthModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-sm shadow-2xl p-6 space-y-4 text-center">
+      <div class="w-12 h-12 rounded-2xl bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 flex items-center justify-center mx-auto">
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/></svg>
+      </div>
+      <h3 class="text-base font-black text-slate-100">اتصال به پایگاه داده مرکزی</h3>
+      <p class="text-xs text-slate-300 leading-relaxed">
+        تمامی اطلاعات این سامانه مستقیماً روی سرور مرکزی ذخیره می‌شوند تا در تمام دستگاه‌ها مشترک و به‌روز باشند. برای ادامه لطفاً با حساب گوگل خود وارد شوید.
+      </p>
+      <div class="pt-2 flex flex-col gap-2">
+        <button type="button" onclick="handleCloudGoogleSignIn(true)" class="w-full py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black rounded-xl text-sm transition cursor-pointer">
+          ورود با حساب گوگل (Google)
+        </button>
+        <button type="button" onclick="closeModal('cloudAuthModal')" class="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs transition cursor-pointer">
+          فعلاً نه
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- هسته ارتباط ابری Firebase (Cloud Firestore + Google Auth) -->
+  <script type="module" src="/src/main.tsx"></script>
   <!-- بارگذاری کتابخانه پردازش اکسل آفلاین (SheetJS) -->
   <script src="xlsx.full.min.js"></script>
   <!-- بارگذاری اطلاعات اولیه پرسنل از فایل استخراج‌شده از اکسل -->
   <script src="personnel-data.js?v=3"></script>
-  <!-- بارگذاری هسته منطق، دیتابیس IndexedDB و عملیات PWA با شناسه نسخه -->
-  <script src="app.js?v=3.1.0"></script>
+  <!-- بارگذاری هسته منطق و عملیات مرکزی سیستم -->
+  <script src="app.js?v=3.2.0"></script>
 </body>
 </html>

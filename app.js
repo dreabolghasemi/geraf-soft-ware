@@ -4,7 +4,7 @@
  */
 
 // نسخه رسمی و سراسری پروژه - پس از هر بار تغییرات، این نسخه تغییر می‌یابد تا برنامه‌های نصب‌شده قدیمی بروزرسانی شوند
-var APP_VERSION = '3.0.0';
+var APP_VERSION = '3.2.0';
 window.APP_VERSION = APP_VERSION;
 
 // ==========================================
@@ -54,348 +54,373 @@ function escapeHtml(str) {
 window.escapeHtml = escapeHtml;
 
 // ==========================================
-// ۲. مدیریت دیتابیس محلی (IndexedDB)
+// ۲. مدیریت پایگاه داده مرکزی (Cloud Firestore Bridge) - بدون دیتابیس محلی
 // ==========================================
-var DB_NAME = 'AutomationGraphDB';
-var DB_VERSION = 7;
+function getCloudDB() {
+  return (typeof window !== 'undefined' && window.CloudDB) ? window.CloudDB : null;
+}
 
-function openDB() {
-  return new Promise((resolve, reject) => {
-    let request;
-    try {
-      request = indexedDB.open(DB_NAME, DB_VERSION);
-    } catch (e) {
-      try {
-        request = indexedDB.open(DB_NAME);
-      } catch (err) {
-        return reject(err);
-      }
+function getCloudState() {
+  const c = getCloudDB();
+  return c && typeof c.getState === 'function'
+    ? c.getState()
+    : {
+        authReady: false,
+        signedIn: false,
+        uid: null,
+        email: null,
+        displayName: null,
+        isBootstrappedAdmin: false,
+        isCloudAdmin: false,
+        adminProfile: null,
+        operatorProfile: null,
+        graphs: [],
+        admins: [],
+        orgStructure: null,
+        assets: [],
+        personnelOverrides: [],
+      };
+}
+
+function requireCloudAuth(promptIfMissing = true) {
+  const st = getCloudState();
+  if (st.signedIn) return true;
+  if (promptIfMissing) {
+    if (typeof showToast === 'function') {
+      showToast('برای ثبت یا ویرایش اطلاعات روی سرور مرکزی، ابتدا با حساب گوگل وارد شوید.', 'warning');
     }
+    if (typeof openModal === 'function') {
+      openModal('cloudAuthModal');
+    }
+  }
+  return false;
+}
 
-    request.onerror = () => {
-      // اگر نسخه درخواستی کمتر از دیتابیس موجود باشد (خطای VersionError)، بدون تعیین نسخه باز می‌کنیم
-      if (request.error && (request.error.name === 'VersionError' || (request.error.message && request.error.message.includes('less than')))) {
-        console.warn('Recovering from VersionError: opening existing DB without version constrain');
-        try {
-          const fallbackReq = indexedDB.open(DB_NAME);
-          fallbackReq.onsuccess = () => resolve(fallbackReq.result);
-          fallbackReq.onerror = () => reject(fallbackReq.error);
-          return;
-        } catch (fbErr) {
-          return reject(fbErr);
-        }
-      }
-      reject(request.error);
-    };
+async function handleCloudGoogleSignIn(closeCloudModal = false) {
+  const c = getCloudDB();
+  if (!c || typeof c.signInGoogle !== 'function') {
+    if (typeof showToast === 'function') showToast('هسته اتصال ابری هنوز بارگذاری نشده است. لحظه‌ای صبر کنید.', 'warning');
+    return null;
+  }
+  try {
+    const user = await c.signInGoogle();
+    if (closeCloudModal && typeof closeModal === 'function') {
+      closeModal('cloudAuthModal');
+    }
+    if (user && typeof showToast === 'function') {
+      showToast(`اتصال به سرور مرکزی با حساب ${user.email} برقرار شد.`, 'success');
+    }
+    return user;
+  } catch (err) {
+    console.warn('Google sign-in note:', err);
+    const code = err?.code || '';
+    if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+      if (typeof showToast === 'function') showToast('پنجره ورود گوگل بسته شد.', 'info');
+    } else if (code === 'auth/unauthorized-domain') {
+      if (typeof showToast === 'function') showToast('دامنه فعلی در تنظیمات Firebase Authentication مجاز نشده است.', 'error');
+    } else {
+      if (typeof showToast === 'function') showToast('خطا در احراز هویت گوگل. لطفاً مجدداً تلاش کنید.', 'error');
+    }
+    return null;
+  }
+}
 
-    request.onsuccess = () => resolve(request.result);
+async function handleCloudGoogleSignOut() {
+  const c = getCloudDB();
+  if (!c || typeof c.signOutGoogle !== 'function') return;
+  try {
+    await c.signOutGoogle();
+    window.AppState.currentUser = null;
+    sessionStorage.removeItem('automation_admin_session');
+    if (window.AppState.currentView === 'admin' && typeof switchToHomeView === 'function') {
+      switchToHomeView();
+    }
+    if (typeof showToast === 'function') showToast('اتصال حساب گوگل قطع شد.', 'info');
+  } catch (err) {
+    console.error('Google sign-out error:', err);
+  }
+}
 
-    request.onupgradeneeded = (e) => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains('graphs')) {
-        const store = db.createObjectStore('graphs', { keyPath: 'id', autoIncrement: true });
-        store.createIndex('timestamp', 'timestamp', { unique: false });
-        store.createIndex('syncStatus', 'syncStatus', { unique: false });
-        store.createIndex('unit', 'operator.unit', { unique: false });
-        store.createIndex('activityType', 'activityType', { unique: false });
+function handleCloudAuthAction() {
+  const st = getCloudState();
+  if (st.signedIn) {
+    const bar = document.getElementById('cloudAuthStatusBar');
+    if (bar) {
+      bar.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      bar.classList.add('ring-2', 'ring-cyan-400');
+      setTimeout(() => bar.classList.remove('ring-2', 'ring-cyan-400'), 1800);
+    }
+    if (typeof showToast === 'function') {
+      showToast(`متصل به سرور مرکزی با حساب ${st.email}`, 'success');
+    }
+  } else {
+    if (typeof openModal === 'function') openModal('cloudAuthModal');
+    else handleCloudGoogleSignIn(false);
+  }
+}
+
+function copyMyCloudUid() {
+  const st = getCloudState();
+  if (!st.uid) return;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(st.uid).then(() => {
+      if (typeof showToast === 'function') showToast('شناسه یکتای گوگل (UID) کپی شد.', 'success');
+    }).catch(() => {});
+  } else {
+    if (typeof showToast === 'function') showToast(`UID شما: ${st.uid}`, 'info');
+  }
+}
+
+function updateCloudAuthUI() {
+  const st = getCloudState();
+  const headerDot = document.getElementById('headerCloudAuthDot');
+  const headerText = document.getElementById('headerCloudAuthText');
+  const statusDot = document.getElementById('cloudStatusIndicatorDot');
+  const statusTitle = document.getElementById('cloudStatusTitle');
+  const statusSub = document.getElementById('cloudStatusSubtitle');
+  const signInBtn = document.getElementById('cloudSignInBtn');
+  const signOutBtn = document.getElementById('cloudSignOutBtn');
+  const copyUidBtn = document.getElementById('cloudCopyUidBtn');
+
+  if (st.signedIn) {
+    if (headerDot) headerDot.className = 'w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_#34d399]';
+    if (headerText) headerText.textContent = st.isCloudAdmin ? 'مدیر مرکزی' : 'متصل به سرور';
+    if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399] shrink-0';
+    if (statusTitle) {
+      statusTitle.textContent = `متصل به سرور مرکزی (${st.email || 'کاربر گوگل'})`;
+    }
+    if (statusSub) {
+      const roleNote = st.isBootstrappedAdmin
+        ? ' • دسترسی مدیر ارشد کل سامانه فعال است'
+        : (st.isCloudAdmin ? ' • دسترسی مدیر واحد فعال است' : ' • تمامی فعالیت‌ها مستقیماً روی سایت مرکزی ذخیره می‌شوند');
+      statusSub.textContent = `UID: ${st.uid}${roleNote}`;
+    }
+    if (signInBtn) signInBtn.classList.add('hidden');
+    if (signOutBtn) signOutBtn.classList.remove('hidden');
+    if (copyUidBtn) copyUidBtn.classList.remove('hidden');
+  } else {
+    if (headerDot) headerDot.className = 'w-2 h-2 rounded-full bg-amber-400 animate-pulse';
+    if (headerText) headerText.textContent = 'ورود مرکزی';
+    if (statusDot) statusDot.className = 'w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse shrink-0';
+    if (statusTitle) statusTitle.textContent = 'اتصال به پایگاه داده مرکزی سایت';
+    if (statusSub) statusSub.textContent = 'برای ذخیره و همگام‌سازی مستقیم اطلاعات روی سرور مرکزی، با حساب گوگل وارد شوید.';
+    if (signInBtn) signInBtn.classList.remove('hidden');
+    if (signOutBtn) signOutBtn.classList.add('hidden');
+    if (copyUidBtn) copyUidBtn.classList.add('hidden');
+  }
+
+  // بروزرسانی دکمه ورود مستقیم گوگل در مودال مدیران
+  const googleBox = document.getElementById('googleAdminLoginBox');
+  const googleHint = document.getElementById('googleAdminLoginHint');
+  if (googleBox) {
+    if (st.signedIn && st.isCloudAdmin) {
+      googleBox.classList.remove('hidden');
+      if (googleHint) {
+        googleHint.textContent = `حساب تأییدشده: ${st.email} (${st.adminProfile?.fullName || 'مدیر مجاز'})`;
       }
-      if (!db.objectStoreNames.contains('admins')) {
-        const adminStore = db.createObjectStore('admins', { keyPath: 'username' });
-        adminStore.createIndex('username', 'username', { unique: true });
+    } else if (!st.signedIn) {
+      googleBox.classList.remove('hidden');
+      if (googleHint) {
+        googleHint.textContent = 'با حساب گوگل مجاز مدیر وارد شوید تا دسترسی سرور مرکزی فعال گردد';
       }
-      if (!db.objectStoreNames.contains('personnel')) {
-        const pStore = db.createObjectStore('personnel', { keyPath: 'code' });
-        pStore.createIndex('name', 'name', { unique: false });
-      }
-      if (!db.objectStoreNames.contains('asset_rebuildables')) {
-        const arStore = db.createObjectStore('asset_rebuildables', { keyPath: 'id', autoIncrement: true });
-        arStore.createIndex('asset', 'asset', { unique: false });
-        arStore.createIndex('supervision', 'supervision', { unique: false });
-        arStore.createIndex('unit', 'unit', { unique: false });
-      }
-    };
-  });
+    } else {
+      googleBox.classList.add('hidden');
+    }
+  }
 }
 
 async function saveGraphRecord(record) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    try {
-      const tx = db.transaction('graphs', 'readwrite');
-      const store = tx.objectStore('graphs');
-      const cleanRecord = JSON.parse(JSON.stringify(record));
-      if (cleanRecord.id === undefined || cleanRecord.id === null) {
-        delete cleanRecord.id;
-      }
-      const req = store.add(cleanRecord);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    } catch (err) {
-      reject(err);
-    }
-  });
+  const c = getCloudDB();
+  if (!c) throw new Error('CloudDB آماده نیست');
+  return await c.saveGraphRecord(record);
 }
 
 async function getAllGraphRecords() {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('graphs', 'readonly');
-    const store = tx.objectStore('graphs');
-    const req = store.getAll();
-    req.onsuccess = () => resolve(req.result || []);
-    req.onerror = () => reject(req.error);
-  });
+  const c = getCloudDB();
+  const st = getCloudState();
+  if (!c || !st.signedIn) return [];
+  return await c.getAllGraphRecords();
 }
 
 async function deleteGraphRecord(id) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('graphs', 'readwrite');
-    const store = tx.objectStore('graphs');
-    const req = store.delete(Number(id));
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+  const c = getCloudDB();
+  if (!c) throw new Error('CloudDB آماده نیست');
+  return await c.deleteGraphRecord(String(id));
 }
 
 async function updateGraphRecord(record) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('graphs', 'readwrite');
-    const store = tx.objectStore('graphs');
-    const req = store.put(record);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+  const c = getCloudDB();
+  if (!c) throw new Error('CloudDB آماده نیست');
+  return await c.updateGraphRecord(record);
 }
 
 async function getAdminsList() {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('admins', 'readonly');
-    const store = tx.objectStore('admins');
-    const req = store.getAll();
-    req.onsuccess = () => resolve(req.result || []);
-    req.onerror = () => reject(req.error);
-  });
+  const c = getCloudDB();
+  const st = getCloudState();
+  if (!c || !st.signedIn) return [];
+  return await c.getAdminsList();
 }
 
 async function saveAdminUser(admin) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('admins', 'readwrite');
-    const store = tx.objectStore('admins');
-    const req = store.put(admin);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+  const c = getCloudDB();
+  if (!c) throw new Error('CloudDB آماده نیست');
+  return await c.saveAdminUser(admin);
 }
 
-async function deleteAdminUser(username) {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('admins', 'readwrite');
-    const store = tx.objectStore('admins');
-    const req = store.delete(username);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+async function deleteAdminUser(usernameOrUid) {
+  const c = getCloudDB();
+  if (!c) throw new Error('CloudDB آماده نیست');
+  return await c.deleteAdminUser(usernameOrUid);
 }
 
-// عملیات بانک اطلاعات پرسنل در دیتابیس محلی IndexedDB
-async function getAllPersonnelFromDB() {
-  try {
-    const db = await openDB();
-    if (!db.objectStoreNames.contains('personnel')) return [];
-    return new Promise((resolve) => {
-      const tx = db.transaction('personnel', 'readonly');
-      const store = tx.objectStore('personnel');
-      const req = store.getAll();
-      req.onsuccess = () => resolve(req.result || []);
-      req.onerror = () => resolve([]);
-    });
-  } catch (e) {
-    console.warn('getAllPersonnelFromDB error:', e);
-    return [];
-  }
-}
-
-async function savePersonnelRecordToDB(p) {
-  try {
-    const db = await openDB();
-    if (!db.objectStoreNames.contains('personnel')) return;
-    return new Promise((resolve) => {
-      const tx = db.transaction('personnel', 'readwrite');
-      const store = tx.objectStore('personnel');
-      const req = store.put(p);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => resolve(null);
-    });
-  } catch (e) {
-    console.warn('savePersonnelRecordToDB error:', e);
-  }
-}
-
-async function saveMultiplePersonnelToDB(list) {
-  if (!list || !list.length) return;
-  try {
-    const db = await openDB();
-    if (!db.objectStoreNames.contains('personnel')) return;
-    return new Promise((resolve) => {
-      const tx = db.transaction('personnel', 'readwrite');
-      const store = tx.objectStore('personnel');
-      for (let i = 0; i < list.length; i++) {
-        store.put(list[i]);
-      }
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
-    });
-  } catch (e) {
-    console.warn('saveMultiplePersonnelToDB error:', e);
-  }
-}
-
-async function deletePersonnelFromDB(code) {
-  try {
-    const db = await openDB();
-    if (!db.objectStoreNames.contains('personnel')) return;
-    return new Promise((resolve) => {
-      const tx = db.transaction('personnel', 'readwrite');
-      const store = tx.objectStore('personnel');
-      const req = store.delete(String(code));
-      req.onsuccess = () => resolve();
-      req.onerror = () => resolve();
-    });
-  } catch (e) {
-    console.warn('deletePersonnelFromDB error:', e);
-  }
-}
-
-async function clearPersonnelDB() {
-  try {
-    const db = await openDB();
-    if (!db.objectStoreNames.contains('personnel')) return;
-    return new Promise((resolve) => {
-      const tx = db.transaction('personnel', 'readwrite');
-      const store = tx.objectStore('personnel');
-      const req = store.clear();
-      req.onsuccess = () => resolve();
-      req.onerror = () => resolve();
-    });
-  } catch (e) {
-    console.warn('clearPersonnelDB error:', e);
-  }
-}
-
-// عملیات بانک اطلاعات تجهیزات و قطعات بازسازی (Asset & Rebuildable)
 async function getAllAssetRebuildableRecordsFromDB() {
-  try {
-    const db = await openDB();
-    if (!db.objectStoreNames.contains('asset_rebuildables')) {
-      return JSON.parse(localStorage.getItem('automation_asset_rebuildables') || '[]');
-    }
-    return new Promise((resolve) => {
-      const tx = db.transaction('asset_rebuildables', 'readonly');
-      const store = tx.objectStore('asset_rebuildables');
-      const req = store.getAll();
-      req.onsuccess = () => {
-        const list = req.result || [];
-        localStorage.setItem('automation_asset_rebuildables', JSON.stringify(list));
-        resolve(list);
-      };
-      req.onerror = () => {
-        const fallback = JSON.parse(localStorage.getItem('automation_asset_rebuildables') || '[]');
-        resolve(fallback);
-      };
-    });
-  } catch (e) {
-    console.warn('getAllAssetRebuildableRecordsFromDB error:', e);
-    return JSON.parse(localStorage.getItem('automation_asset_rebuildables') || '[]');
+  const c = getCloudDB();
+  const st = getCloudState();
+  if (!c || !st.signedIn) {
+    return st.assets && st.assets.length > 0 ? [...st.assets] : [...DEFAULT_ASSET_REBUILDABLES];
   }
+  const items = await c.getAllAssetCatalogItems();
+  return items && items.length > 0 ? items : [...DEFAULT_ASSET_REBUILDABLES];
 }
 
 async function saveAssetRebuildableRecordToDB(record) {
-  try {
-    const db = await openDB();
-    if (!db.objectStoreNames.contains('asset_rebuildables')) {
-      const list = JSON.parse(localStorage.getItem('automation_asset_rebuildables') || '[]');
-      if (!record.id) record.id = Date.now() + Math.floor(Math.random() * 1000);
-      const idx = list.findIndex(r => r.id === record.id);
-      if (idx >= 0) list[idx] = record;
-      else list.push(record);
-      localStorage.setItem('automation_asset_rebuildables', JSON.stringify(list));
-      return record.id;
-    }
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction('asset_rebuildables', 'readwrite');
-      const store = tx.objectStore('asset_rebuildables');
-      const req = store.put(record);
-      req.onsuccess = () => {
-        record.id = req.result;
-        resolve(req.result);
-      };
-      req.onerror = () => reject(req.error);
-    });
-  } catch (e) {
-    console.warn('saveAssetRebuildableRecordToDB error:', e);
-    const list = JSON.parse(localStorage.getItem('automation_asset_rebuildables') || '[]');
-    if (!record.id) record.id = Date.now() + Math.floor(Math.random() * 1000);
-    const idx = list.findIndex(r => r.id === record.id);
-    if (idx >= 0) list[idx] = record;
-    else list.push(record);
-    localStorage.setItem('automation_asset_rebuildables', JSON.stringify(list));
-    return record.id;
-  }
+  const c = getCloudDB();
+  if (!c) throw new Error('CloudDB آماده نیست');
+  return await c.saveAssetRebuildableRecord(record);
+}
+
+async function updateAssetRebuildableRecordInDB(record) {
+  return await saveAssetRebuildableRecordToDB(record);
 }
 
 async function saveMultipleAssetRebuildablesToDB(records) {
-  if (!records || !records.length) return;
-  try {
-    const db = await openDB();
-    if (!db.objectStoreNames.contains('asset_rebuildables')) {
-      const list = JSON.parse(localStorage.getItem('automation_asset_rebuildables') || '[]');
-      records.forEach(r => {
-        if (!r.id) r.id = Date.now() + Math.floor(Math.random() * 100000);
-        list.push(r);
-      });
-      localStorage.setItem('automation_asset_rebuildables', JSON.stringify(list));
-      return;
-    }
-    return new Promise((resolve) => {
-      const tx = db.transaction('asset_rebuildables', 'readwrite');
-      const store = tx.objectStore('asset_rebuildables');
-      records.forEach(r => {
-        if (!r.id) delete r.id; // اجازه تولید خودکار id در صورت وجود autoIncrement
-        store.put(r);
-      });
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
-    });
-  } catch (e) {
-    console.warn('saveMultipleAssetRebuildablesToDB error:', e);
-  }
+  const c = getCloudDB();
+  if (!c) throw new Error('CloudDB آماده نیست');
+  return await c.saveMultipleAssetRebuildables(records);
 }
 
 async function deleteAssetRebuildableRecordFromDB(id) {
-  try {
-    const db = await openDB();
-    if (!db.objectStoreNames.contains('asset_rebuildables')) {
-      let list = JSON.parse(localStorage.getItem('automation_asset_rebuildables') || '[]');
-      list = list.filter(r => r.id !== id);
-      localStorage.setItem('automation_asset_rebuildables', JSON.stringify(list));
-      return;
-    }
-    return new Promise((resolve) => {
-      const tx = db.transaction('asset_rebuildables', 'readwrite');
-      const store = tx.objectStore('asset_rebuildables');
-      const req = store.delete(Number(id) || id);
-      req.onsuccess = () => resolve();
-      req.onerror = () => resolve();
-    });
-  } catch (e) {
-    console.warn('deleteAssetRebuildableRecordFromDB error:', e);
-  }
+  const c = getCloudDB();
+  if (!c) throw new Error('CloudDB آماده نیست');
+  return await c.deleteAssetRebuildableRecord(String(id));
 }
+
+function applyPersonnelOverrides() {
+  const baseList = (typeof window !== 'undefined' && Array.isArray(window.INITIAL_PERSONNEL_DATA))
+    ? window.INITIAL_PERSONNEL_DATA
+    : [];
+  const overrides = getCloudState().personnelOverrides || [];
+  if (!overrides.length) {
+    if (baseList.length > 0) initPersonnelState(baseList);
+    return;
+  }
+
+  const byCode = new Map();
+  baseList.forEach((p) => {
+    const code = String(p.code || '').trim();
+    if (code) byCode.set(code, { ...p });
+  });
+
+  overrides.forEach((ov) => {
+    const code = String(ov.code || '').trim();
+    if (!code) return;
+    if (ov.action === 'delete') {
+      byCode.delete(code);
+    } else {
+      const prev = byCode.get(code) || {};
+      byCode.set(code, {
+        ...prev,
+        code,
+        name: ov.name || prev.name || code,
+        nationalId: ov.nationalId !== undefined ? ov.nationalId : (prev.nationalId || ''),
+        mobile: ov.mobile !== undefined ? ov.mobile : (prev.mobile || ''),
+        management: ov.management || prev.management || 'مدیریت اتوماسیون و ارتباطات',
+        supervision: ov.supervision !== undefined ? ov.supervision : (prev.supervision || ''),
+        serviceUnit: ov.serviceUnit !== undefined ? ov.serviceUnit : (prev.serviceUnit || ''),
+        jobTitle: ov.jobTitle !== undefined ? ov.jobTitle : (prev.jobTitle || ''),
+      });
+    }
+  });
+
+  initPersonnelState(Array.from(byCode.values()));
+}
+
+window.onCloudStateSync = function(reason) {
+  updateCloudAuthUI();
+  const st = getCloudState();
+
+  if (reason === 'authSignedIn' || reason === 'orgStructure') {
+    populateOrgDropdowns();
+    renderOrgManagementUI();
+    updateAdminFilterDropdowns();
+  }
+
+  if (reason === 'authSignedIn' || reason === 'operatorProfile') {
+    if (st.operatorProfile && (st.operatorProfile.personnelId || st.operatorProfile.name)) {
+      const cloudOp = { ...st.operatorProfile };
+      const match = findPersonnelByCode(cloudOp.personnelId);
+      if (match) {
+        cloudOp.nationalId = cloudOp.nationalId || match.nationalId || '';
+        cloudOp.mobile = cloudOp.mobile || match.mobile || '';
+        cloudOp.firstName = cloudOp.firstName || match.firstName || '';
+        cloudOp.lastName = cloudOp.lastName || match.lastName || '';
+      }
+      window.AppState.operator = cloudOp;
+      try {
+        sessionStorage.setItem('automation_operator_profile', JSON.stringify(cloudOp));
+      } catch (e) {}
+      updateOperatorSummaryUI();
+      populateAsettDatalist();
+    }
+  }
+
+  if (reason === 'authSignedIn' || reason === 'assets') {
+    window.AppState.assetRecords = (st.assets && st.assets.length > 0)
+      ? [...st.assets]
+      : [...DEFAULT_ASSET_REBUILDABLES];
+    populateAsettDatalist();
+    if (window.AppState.currentView === 'admin' && typeof renderAssetRebuildableUI === 'function') {
+      renderAssetRebuildableUI(true);
+    }
+  }
+
+  if (reason === 'authSignedIn' || reason === 'graphs') {
+    if (typeof updatePendingQueueCount === 'function') updatePendingQueueCount();
+    if (window.AppState.currentView === 'admin' && typeof loadAdminReports === 'function') {
+      loadAdminReports(true);
+    }
+  }
+
+  if (reason === 'authSignedIn' || reason === 'admins') {
+    if (st.isCloudAdmin && st.adminProfile && (!window.AppState.currentUser || window.AppState.currentUser.uid === st.uid)) {
+      window.AppState.currentUser = { ...st.adminProfile };
+      sessionStorage.setItem('automation_admin_session', JSON.stringify(window.AppState.currentUser));
+    }
+    if (window.AppState.currentView === 'admin' && canAccessAdminManage() && typeof loadAdminUsersList === 'function') {
+      loadAdminUsersList();
+    }
+  }
+
+  if (reason === 'authSignedIn' || reason === 'personnelOverrides') {
+    applyPersonnelOverrides();
+    if (window.AppState.currentView === 'admin' && typeof renderPersonnelTable === 'function') {
+      renderPersonnelTable();
+    }
+  }
+
+  if (reason === 'authSignedOut') {
+    window.AppState.allReports = [];
+    window.AppState.currentUser = null;
+    window.AppState.assetRecords = [...DEFAULT_ASSET_REBUILDABLES];
+    sessionStorage.removeItem('automation_admin_session');
+    if (window.AppState.currentView === 'admin' && typeof switchToHomeView === 'function') {
+      switchToHomeView();
+    }
+    populateOrgDropdowns();
+    populateAsettDatalist();
+    if (typeof updatePendingQueueCount === 'function') updatePendingQueueCount();
+  }
+};
 
 // ==========================================
 // ۳. وضعیت برنامه، پوسته (تم) و متغیرهای سراسری
@@ -481,23 +506,25 @@ function initThemeUI() {
 
 function loadOperatorProfile() {
   try {
-    const stored = localStorage.getItem('automation_operator_profile');
-    if (stored) {
-      window.AppState.operator = JSON.parse(stored);
-      if (window.AppState.operator && window.AppState.operator.personnelId) {
-        const match = findPersonnelByCode(window.AppState.operator.personnelId);
+    const st = getCloudState();
+    let op = st.operatorProfile ? { ...st.operatorProfile } : null;
+    if (!op) {
+      const sess = sessionStorage.getItem('automation_operator_profile');
+      if (sess) op = JSON.parse(sess);
+    }
+    if (op) {
+      if (op.personnelId) {
+        const match = findPersonnelByCode(op.personnelId);
         if (match) {
-          let changed = false;
-          if (!window.AppState.operator.firstName || !window.AppState.operator.lastName) {
-            window.AppState.operator.firstName = match.firstName || '';
-            window.AppState.operator.lastName = match.lastName || '';
-            changed = true;
+          if (!op.firstName || !op.lastName) {
+            op.firstName = match.firstName || '';
+            op.lastName = match.lastName || '';
           }
-          if (changed) {
-            localStorage.setItem('automation_operator_profile', JSON.stringify(window.AppState.operator));
-          }
+          if (!op.nationalId) op.nationalId = match.nationalId || '';
+          if (!op.mobile) op.mobile = match.mobile || '';
         }
       }
+      window.AppState.operator = op;
     }
   } catch (e) {
     console.error('Error loading operator profile', e);
@@ -602,7 +629,7 @@ function updateOperatorSummaryUI() {
   }
 }
 
-function commitOperatorNow() {
+async function commitOperatorNow() {
   if (_operatorAutoSaveTimer) {
     clearInterval(_operatorAutoSaveTimer);
     _operatorAutoSaveTimer = null;
@@ -611,8 +638,22 @@ function commitOperatorNow() {
   const profile = _pendingOperatorData || window.AppState.operator;
   if (!profile) return;
 
-  localStorage.setItem('automation_operator_profile', JSON.stringify(profile));
   window.AppState.operator = profile;
+  try {
+    sessionStorage.setItem('automation_operator_profile', JSON.stringify(profile));
+  } catch (e) {}
+
+  let savedToCloud = false;
+  const st = getCloudState();
+  const c = getCloudDB();
+  if (st.signedIn && c && typeof c.saveUserOperatorProfile === 'function') {
+    try {
+      await c.saveUserOperatorProfile(profile);
+      savedToCloud = true;
+    } catch (err) {
+      console.warn('Cloud operator save note:', err);
+    }
+  }
 
   const noticeBox = document.getElementById('operatorAutoSaveNotice');
   const commitNowBtn = document.getElementById('commitNowBtn');
@@ -622,7 +663,7 @@ function commitOperatorNow() {
   if (commitNowBtn) commitNowBtn.classList.add('hidden');
   if (statusBadge) {
     statusBadge.className = 'text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30';
-    statusBadge.textContent = '✓ ثبت‌شده در سیستم';
+    statusBadge.textContent = savedToCloud ? '✓ ثبت‌شده روی سرور مرکزی' : '✓ تأییدشده در نشست فعلی';
   }
 
   renderOperatorFields(profile);
@@ -636,7 +677,12 @@ function commitOperatorNow() {
   // پس از ذخیره خودکار، جزئیات مشخصات مجری به صورت کشوئی مخفی می‌شود
   toggleOperatorAccordion(false);
 
-  showToast(`✓ مشخصات مجری (${profile.name || profile.firstName}) ذخیره شد و بخش مشخصات کشوئی جمع گردید.`, 'success');
+  showToast(
+    savedToCloud
+      ? `✓ مشخصات مجری (${profile.name || profile.firstName}) در پروفایل مرکزی ذخیره شد.`
+      : `✓ مشخصات مجری (${profile.name || profile.firstName}) در نشست فعلی فعال شد. برای ذخیره دائمی، با حساب گوگل وارد شوید.`,
+    'success'
+  );
 }
 window.commitOperatorNow = commitOperatorNow;
 
@@ -2227,46 +2273,29 @@ if (typeof window !== 'undefined' && window.INITIAL_PERSONNEL_DATA && Array.isAr
   initPersonnelState(window.INITIAL_PERSONNEL_DATA);
 }
 
-// بارگذاری بانک اطلاعات پرسنل (از IndexedDB یا فایل پرسنل اولیه اکسل)
+// بارگذاری بانک اطلاعات پرسنل (از فایل استاندارد + تغییرات متمرکز روی سرور مرکزی)
 async function loadPersonnelData() {
   try {
-    const masterList = (typeof window !== 'undefined' && window.INITIAL_PERSONNEL_DATA && Array.isArray(window.INITIAL_PERSONNEL_DATA))
+    let masterList = (typeof window !== 'undefined' && window.INITIAL_PERSONNEL_DATA && Array.isArray(window.INITIAL_PERSONNEL_DATA))
       ? window.INITIAL_PERSONNEL_DATA
       : [];
 
-    if (masterList.length > 0) {
-      initPersonnelState(masterList);
-    }
-
-    let records = [];
-    try {
-      records = await getAllPersonnelFromDB();
-    } catch (dbErr) {
-      console.warn('Could not read from IndexedDB personnel store:', dbErr);
-    }
-
-    // اگر دیتابیس لوکال خالی است یا رکوردهای کمتری نسبت به فایل اکسل کامل (۷۵۲۷ رکورد) دارد، بروزرسانی شود
-    if (!records || records.length < masterList.length) {
-      if (masterList.length > 0) {
-        records = masterList;
-        saveMultiplePersonnelToDB(records).catch((e) => console.warn('Background save to DB error:', e));
-      } else {
-        try {
-          const res = await fetch('/personnel-data.json');
-          if (res.ok) {
-            records = await res.json();
-            if (records && records.length > 0) {
-              saveMultiplePersonnelToDB(records).catch((e) => console.warn('Background save to DB error:', e));
-            }
+    if (masterList.length === 0) {
+      try {
+        const res = await fetch('/personnel-data.json');
+        if (res.ok) {
+          masterList = await res.json();
+          if (masterList && masterList.length > 0) {
+            window.INITIAL_PERSONNEL_DATA = masterList;
           }
-        } catch (fetchErr) {
-          console.warn('Fetch personnel-data.json failed:', fetchErr);
         }
+      } catch (fetchErr) {
+        console.warn('Fetch personnel-data.json failed:', fetchErr);
       }
     }
 
-    if (records && records.length > 0) {
-      initPersonnelState(records);
+    if (masterList.length > 0) {
+      applyPersonnelOverrides();
     }
 
     // در صورتی که جدول پرسنل در DOM فعال باشد، به‌روزرسانی شود
@@ -2425,8 +2454,8 @@ function processAndWatermarkImage(file) {
       img.onerror = reject;
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const MAX_WIDTH = 1280;
-        const MAX_HEIGHT = 1280;
+        const MAX_WIDTH = 960;
+        const MAX_HEIGHT = 960;
         let width = img.width;
         let height = img.height;
 
@@ -2448,15 +2477,15 @@ function processAndWatermarkImage(file) {
 
         // درج نوار رسمی و مُهر تاریخ و زمان شمسی
         ctx.fillStyle = 'rgba(15, 23, 42, 0.75)';
-        ctx.fillRect(0, height - 42, width, 42);
+        ctx.fillRect(0, height - 38, width, 38);
         ctx.fillStyle = '#fbbf24';
-        ctx.font = 'bold 16px Vazirmatn, Tahoma, sans-serif';
+        ctx.font = 'bold 14px Vazirmatn, Tahoma, sans-serif';
         ctx.direction = 'rtl';
         const jalali = getFormattedJalali();
         const stampText = `مدیریت اتوماسیون و ارتباطات | ${jalali.fullPersian}`;
-        ctx.fillText(stampText, width - 20, height - 15);
+        ctx.fillText(stampText, width - 16, height - 13);
 
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.68);
         resolve(dataUrl);
       };
       img.src = event.target.result;
@@ -2784,55 +2813,13 @@ var DEFAULT_ASSET_REBUILDABLES = [
 
 async function ensureDefaultAssetRebuildables(existingRecords) {
   let records = Array.isArray(existingRecords) ? [...existingRecords] : [];
-  let updated = false;
-
-  for (const def of DEFAULT_ASSET_REBUILDABLES) {
-    const normDefAsset = (def.asset || '').trim().toUpperCase();
-    const normDefRebuild = (def.rebuildable || '').trim().toUpperCase();
-
-    const existingIndex = records.findIndex(r => {
-      const a = (r.asset || '').trim().toUpperCase();
-      const reb = (r.rebuildable || '').trim().toUpperCase();
-      return a === normDefAsset && reb === normDefRebuild;
-    });
-
-    if (existingIndex < 0) {
-      const itemToSave = {
-        ...def,
-        createdAt: def.createdAt || new Date().toISOString()
-      };
-      try {
-        const id = await saveAssetRebuildableRecordToDB(itemToSave);
-        itemToSave.id = id;
-      } catch (e) {
-        itemToSave.id = Date.now() + Math.floor(Math.random() * 1000);
-      }
-      records.push(itemToSave);
-      updated = true;
-    } else {
-      // بروزرسانی توضیحات و فیلدهای پیش‌فرض در صورت تغییر
-      const current = records[existingIndex];
-      if (current.description !== def.description || current.supervision !== def.supervision || current.unit !== def.unit) {
-        records[existingIndex] = {
-          ...current,
-          description: def.description,
-          supervision: def.supervision,
-          unit: def.unit
-        };
-        try {
-          await updateAssetRebuildableRecordInDB(records[existingIndex]);
-        } catch (e) {}
-        updated = true;
-      }
-    }
+  if (records.length === 0) {
+    records = DEFAULT_ASSET_REBUILDABLES.map((def, idx) => ({
+      id: `def_${idx}_${Date.now()}`,
+      ...def,
+      createdAt: def.createdAt || new Date().toISOString()
+    }));
   }
-
-  if (updated) {
-    try {
-      localStorage.setItem('automation_asset_rebuildables', JSON.stringify(records));
-    } catch (e) {}
-  }
-
   return records;
 }
 
@@ -2841,28 +2828,21 @@ async function getOrFetchAllAssetRebuildables(forceRefresh = false) {
     return window.AppState.assetRecords;
   }
   try {
-    let records = await getAllAssetRebuildableRecordsFromDB();
-    const defaultRebuildables = [
-      'کارت پردازنده اصلی CPU 414-4H',
-      'ماژول ورودی/خروجی آنالوگ AI 8x13Bit',
-      'پوزیشنر هوشمند Fisher DVC6200',
-      'اکچویتور پنوماتیک دیافراگمی 657',
-      'فرستنده-گیرنده UHF تله‌متری',
-      'پاور ماژولار ریداندنت 12V 450W'
-    ];
-    if (records && records.length > 0) {
-      const hasDefaults = records.some(r => defaultRebuildables.includes((r.rebuildable || '').trim()));
-      if (hasDefaults) {
-        records = records.filter(r => !defaultRebuildables.includes((r.rebuildable || '').trim()));
-        localStorage.setItem('automation_asset_rebuildables', JSON.stringify(records));
-      }
+    const st = getCloudState();
+    let records = [];
+    if (st.signedIn) {
+      records = forceRefresh ? await getAllAssetRebuildableRecordsFromDB() : (st.assets.length ? [...st.assets] : await getAllAssetRebuildableRecordsFromDB());
+    } else {
+      records = [...DEFAULT_ASSET_REBUILDABLES];
     }
     records = await ensureDefaultAssetRebuildables(records);
     window.AppState.assetRecords = records || [];
     return window.AppState.assetRecords;
   } catch (err) {
     console.warn('getOrFetchAllAssetRebuildables fallback:', err);
-    return window.AppState.assetRecords || [];
+    return window.AppState.assetRecords && window.AppState.assetRecords.length > 0
+      ? window.AppState.assetRecords
+      : [...DEFAULT_ASSET_REBUILDABLES];
   }
 }
 
@@ -2928,8 +2908,8 @@ async function syncRebuildablesForAsett(asettVal) {
       return;
     }
 
-    // خواندن رکوردهای معتبر از دیتابیس
-    const records = await getOrFetchAllAssetRebuildables(true);
+    // خواندن رکوردهای معتبر از دیتابیس ابری همگام‌شده
+    const records = await getOrFetchAllAssetRebuildables(false);
     const cleanQuery = normalizeSearchText(asett);
 
     // ۱. تطبیق دقیق عنوان یا کد تجهیز با دیتابیس
@@ -3242,6 +3222,10 @@ async function handleGraphFormSubmit(e) {
     }
   }
 
+  if (!requireCloudAuth(true)) {
+    return;
+  }
+
   const graphRecord = {
     timestamp: now.getTime(),
     jalaliDate: jalali.dateNumStr,
@@ -3250,7 +3234,6 @@ async function handleGraphFormSubmit(e) {
     operator: { ...window.AppState.operator },
     asett,
     rebuildable,
-    photo: primaryPhoto,
     photos: photos,
     reportNotes: reportNotes || '', // توضیحات تکمیلی اختیاری است
     activityType: activityTypeSummary,
@@ -3265,18 +3248,13 @@ async function handleGraphFormSubmit(e) {
     durationFormatted: durationFormatted,
     durationDigital: durationDigital,
     durationMethod: (window.StopwatchState && window.StopwatchState.elapsedTime > 0) ? 'اتوماتیک (کرنومتر)' : (durationTotalSeconds > 0 ? 'دستی' : 'نامشخص'),
-    syncStatus: isOnline ? 'synced' : 'pending',
-    syncedAt: isOnline ? now.toISOString() : null
+    syncStatus: 'synced',
+    syncedAt: now.toISOString()
   };
 
   try {
     const id = await saveGraphRecord(graphRecord);
-    showToast(
-      isOnline
-        ? `فعالیت شماره #${id} با موفقیت ثبت و همگام‌سازی شد.`
-        : `فعالیت شماره #${id} به دلیل آفلاین بودن در حافظه ذخیره و در صف انتظار قرار گرفت.`,
-      isOnline ? 'success' : 'warning'
-    );
+    showToast(`فعالیت با شناسه #${id} با موفقیت روی پایگاه داده مرکزی سایت ذخیره شد.`, 'success');
 
     try {
       resetGraphForm();
@@ -3285,8 +3263,11 @@ async function handleGraphFormSubmit(e) {
     }
     if (typeof updatePendingQueueCount === 'function') updatePendingQueueCount();
   } catch (err) {
-    console.error('Error saving record', err);
-    showToast('خطا در ذخیره‌سازی رکورد در دیتابیس محلی', 'error');
+    console.error('Error saving cloud record', err);
+    const msg = err?.message?.includes('AUTH_REQUIRED')
+      ? 'لطفاً ابتدا با حساب گوگل خود وارد شوید.'
+      : (err?.message?.includes('حجم کل تصاویر') ? err.message : 'خطا در ذخیره‌سازی فعالیت روی سرور مرکزی. اتصال اینترنت خود را بررسی نمایید.');
+    showToast(msg, 'error');
   }
 }
 
@@ -3401,7 +3382,8 @@ function updateNetworkStatusIndicator() {
 
 async function updatePendingQueueCount() {
   try {
-    const records = await getAllGraphRecords();
+    const st = getCloudState();
+    const records = st.signedIn ? (st.graphs || []) : [];
     const pendingList = records.filter((r) => r.syncStatus === 'pending');
     const count = pendingList.length;
 
@@ -3426,17 +3408,18 @@ async function syncPendingRecords() {
     showToast('در حال حاضر دسترسی به اینترنت مقدور نیست.', 'warning');
     return;
   }
+  if (!requireCloudAuth(true)) return;
 
   try {
     const records = await getAllGraphRecords();
     const pendingList = records.filter((r) => r.syncStatus === 'pending');
 
     if (pendingList.length === 0) {
-      showToast('تمام گراف‌ها همگام‌سازی شده‌اند و صفی وجود ندارد.', 'info');
+      showToast('تمام اطلاعات مستقیماً روی سرور مرکزی همگام هستند و صفی وجود ندارد.', 'info');
       return;
     }
 
-    showToast(`در حال همگام‌سازی ${pendingList.length} رکورد با سرور...`, 'info');
+    showToast(`در حال همگام‌سازی ${pendingList.length} رکورد با سرور مرکزی...`, 'info');
 
     for (const rec of pendingList) {
       rec.syncStatus = 'synced';
@@ -3445,13 +3428,13 @@ async function syncPendingRecords() {
     }
 
     await updatePendingQueueCount();
-    showToast(`همگام‌سازی موفق: تمام ${pendingList.length} رکورد ارسال شدند.`, 'success');
+    showToast(`همگام‌سازی موفق: تمام ${pendingList.length} رکورد در سرور مرکزی نهایی شدند.`, 'success');
     if (window.AppState.currentView === 'admin') {
       loadAdminReports();
     }
   } catch (e) {
     console.error('Sync failed', e);
-    showToast('خطا در همگام‌سازی رکوردها', 'error');
+    showToast('خطا در همگام‌سازی رکوردها با سرور مرکزی', 'error');
   }
 }
 
@@ -4050,6 +4033,8 @@ var MANAGER_ADMIN = {
 };
 
 function isMasterAdmin(user) {
+  const st = getCloudState();
+  if (st.isBootstrappedAdmin) return true;
   if (!user) user = window.AppState ? window.AppState.currentUser : null;
   if (!user) {
     try {
@@ -4057,7 +4042,7 @@ function isMasterAdmin(user) {
       if (stored) user = JSON.parse(stored);
     } catch (e) {}
   }
-  if (!user) return true; // دسترسی پیش‌فرض در صورت عدم تعیین کاربر
+  if (!user) return false;
   return user.username === 'admin' || user.username === '417734' || user.username === '417737' || user.isSuperAdmin === true;
 }
 
@@ -4088,7 +4073,7 @@ function canAccessPersonnelManage(user) {
 function canAccessAssetRebuildable(user) {
   if (isMasterAdmin(user)) return true;
   if (!user) user = window.AppState ? window.AppState.currentUser : null;
-  return user && user.permissions ? user.permissions.assetRebuildable !== false : true;
+  return user && user.permissions ? user.permissions.assetRebuildable !== false : false;
 }
 
 window.isMasterAdmin = isMasterAdmin;
@@ -4099,20 +4084,18 @@ window.canAccessPersonnelManage = canAccessPersonnelManage;
 window.canAccessAssetRebuildable = canAccessAssetRebuildable;
 
 function checkAdminAuthSession() {
+  const st = getCloudState();
+  if (st.signedIn && st.isCloudAdmin && st.adminProfile) {
+    window.AppState.currentUser = { ...st.adminProfile };
+    sessionStorage.setItem('automation_admin_session', JSON.stringify(window.AppState.currentUser));
+    return true;
+  }
   const stored = sessionStorage.getItem('automation_admin_session');
-  if (stored) {
+  if (stored && st.signedIn && st.isCloudAdmin) {
     try {
       const parsed = JSON.parse(stored);
       if (parsed) {
-        if (parsed.username === '417734' || parsed.username === '417737') {
-          window.AppState.currentUser = MANAGER_ADMIN;
-        } else if (parsed.username === 'admin') {
-          window.AppState.currentUser = SUPER_ADMIN;
-        } else if (parsed.isSuperAdmin) {
-          window.AppState.currentUser = parsed;
-        } else {
-          window.AppState.currentUser = parsed;
-        }
+        window.AppState.currentUser = parsed;
         return true;
       }
     } catch (e) {
@@ -4264,69 +4247,73 @@ function showAdminWelcomeSlide(displayName, callback) {
   }, 3000);
 }
 
+async function loginAdminWithVerifiedGoogle() {
+  let st = getCloudState();
+  if (!st.signedIn) {
+    await handleCloudGoogleSignIn(false);
+    // صبر کوتاه جهت تکمیل بارگذاری پروفایل مدیر از Firestore
+    await new Promise((r) => setTimeout(r, 600));
+    st = getCloudState();
+  }
+  if (!st.signedIn) return;
+
+  if (!st.isCloudAdmin || !st.adminProfile) {
+    showToast(`حساب ${st.email} در فهرست مدیران مجاز سرور ثبت نشده است. شناسه UID شما: ${st.uid}`, 'warning');
+    return;
+  }
+
+  window.AppState.currentUser = { ...st.adminProfile };
+  sessionStorage.setItem('automation_admin_session', JSON.stringify(window.AppState.currentUser));
+  closeModal('loginModal');
+  const displayName = window.AppState.currentUser.fullName || window.AppState.currentUser.username;
+  switchToAdminView();
+  showAdminWelcomeBanner(displayName);
+}
+
 async function handleAdminLogin(e) {
   e.preventDefault();
   const user = document.getElementById('loginUsername').value.trim();
   const pass = document.getElementById('loginPassword').value.trim();
 
-  // ۱. بررسی ورود مدیر نرم‌افزار (admin)
-  if (user.toLowerCase() === 'admin' && (pass === 'Ehsan2559' || pass.toLowerCase() === 'ehsan2559')) {
-    window.AppState.currentUser = SUPER_ADMIN;
-    sessionStorage.setItem('automation_admin_session', JSON.stringify(SUPER_ADMIN));
-    closeModal('loginModal');
-    const form = document.getElementById('adminLoginForm');
-    if (form) form.reset();
+  const st = getCloudState();
 
-    const displayName = SUPER_ADMIN.fullName;
-    switchToAdminView();
-    showAdminWelcomeBanner(displayName);
-    return;
-  }
-
-  // ۲. بررسی ورود مهندس محسن جعفری (مدیراتوماسیون و ارتباطات) - نام کاربری: 417734 و رمز: 3344
-  if ((user === '417734' || user === '417737') && pass === '3344') {
-    window.AppState.currentUser = MANAGER_ADMIN;
-    sessionStorage.setItem('automation_admin_session', JSON.stringify(MANAGER_ADMIN));
-    closeModal('loginModal');
-    const form = document.getElementById('adminLoginForm');
-    if (form) form.reset();
-
-    const displayName = MANAGER_ADMIN.fullName;
-    switchToAdminView();
-    showAdminWelcomeBanner(displayName);
-    return;
-  }
-
-  try {
-    const admins = await getAdminsList();
-    const match = admins.find((a) => a.username === user && a.password === pass);
-    if (match) {
-      window.AppState.currentUser = match;
-      sessionStorage.setItem('automation_admin_session', JSON.stringify(match));
-      closeModal('loginModal');
-      const form = document.getElementById('adminLoginForm');
-      if (form) form.reset();
-
-      const displayName = match.fullName || match.username;
-      switchToAdminView();
-      showAdminWelcomeBanner(displayName);
+  // ۱. بررسی ورود مدیر نرم‌افزار یا مدیر ارشد همراه با تایید گوگل
+  if ((user.toLowerCase() === 'admin' && pass.toLowerCase() === 'ehsan2559') ||
+      ((user === '417734' || user === '417737') && pass === '3344')) {
+    if (!st.signedIn || !st.isCloudAdmin) {
+      showToast('برای دسترسی به پایگاه داده مرکزی در پنل مدیریت، با دکمه «ورود مستقیم با حساب گوگل تأییدشده» وارد شوید.', 'warning');
       return;
     }
-  } catch (err) {
-    console.error('Login check error', err);
+    const adminObj = (user.toLowerCase() === 'admin') ? SUPER_ADMIN : MANAGER_ADMIN;
+    window.AppState.currentUser = { ...adminObj, uid: st.uid, email: st.email };
+    sessionStorage.setItem('automation_admin_session', JSON.stringify(window.AppState.currentUser));
+    closeModal('loginModal');
+    const form = document.getElementById('adminLoginForm');
+    if (form) form.reset();
+    switchToAdminView();
+    showAdminWelcomeBanner(adminObj.fullName);
+    return;
   }
 
-  showToast('نام کاربری یا رمز عبور اشتباه است', 'error');
+  if (st.signedIn && st.isCloudAdmin && st.adminProfile) {
+    if (st.adminProfile.username?.toLowerCase() === user.toLowerCase() || st.email?.toLowerCase() === user.toLowerCase()) {
+      await loginAdminWithVerifiedGoogle();
+      return;
+    }
+  }
+
+  showToast('دسترسی مدیریت از طریق حساب گوگل تأییدشده و ثبت‌شده در بخش مدیران امکان‌پذیر است.', 'error');
 }
 
 function handleAdminLogout() {
   window.AppState.currentUser = null;
   sessionStorage.removeItem('automation_admin_session');
-  showToast('با موفقیت از سیستم خارج شدید', 'info');
+  showToast('با موفقیت از پنل مدیریت خارج شدید', 'info');
   switchToHomeView();
 }
 
 function openAdminAccess() {
+  updateCloudAuthUI();
   if (checkAdminAuthSession()) {
     switchToAdminView();
   } else {
@@ -4515,9 +4502,12 @@ function isRecordAccessibleByAdmin(record, user) {
   return false;
 }
 
-async function loadAdminReports() {
+async function loadAdminReports(fromCache = false) {
   try {
-    const allRecords = await getAllGraphRecords();
+    const st = getCloudState();
+    const allRecords = (fromCache && st.graphs && st.graphs.length > 0)
+      ? [...st.graphs]
+      : await getAllGraphRecords();
     const user = window.AppState.currentUser;
 
     // فیلتر کردن دقیق براساس حوزه سرپرستی و واحد مدیر
@@ -5565,12 +5555,13 @@ function renderReportsTable(list) {
     const tr = document.createElement('tr');
     tr.className = 'border-b border-slate-800 hover:bg-slate-800/40 transition';
 
+    const safeId = escapeHtml(String(r.id));
     let photoThumb = '<span class="text-xs text-slate-500">بدون تصویر</span>';
     if (d.photosList.length === 1) {
-      photoThumb = `<img src="${d.photosList[0]}" onclick="showDetailModal(${r.id})" class="w-10 h-10 object-cover rounded cursor-pointer border border-slate-700 hover:scale-105 transition" title="مشاهده تصویر">`;
+      photoThumb = `<img src="${d.photosList[0]}" onclick="showDetailModal('${safeId}')" class="w-10 h-10 object-cover rounded cursor-pointer border border-slate-700 hover:scale-105 transition" title="مشاهده تصویر">`;
     } else if (d.photosList.length > 1) {
       photoThumb = `
-        <div class="relative inline-block cursor-pointer" onclick="showDetailModal(${r.id})" title="مشاهده ${d.photosList.length} تصویر">
+        <div class="relative inline-block cursor-pointer" onclick="showDetailModal('${safeId}')" title="مشاهده ${d.photosList.length} تصویر">
           <img src="${d.photosList[0]}" class="w-10 h-10 object-cover rounded border border-amber-500/60 shadow hover:scale-105 transition">
           <span class="absolute -top-1.5 -left-1.5 bg-amber-500 text-slate-950 font-bold text-[9px] px-1 rounded-full border border-slate-900 shadow">
             +${d.photosList.length}
@@ -5607,10 +5598,10 @@ function renderReportsTable(list) {
       <td class="p-3 font-mono text-[11px] text-slate-400 whitespace-nowrap text-right" dir="ltr">${escapeHtml(d.locationStr)}</td>
       <td class="p-3 text-center whitespace-nowrap sticky left-0 bg-slate-950/90 shadow-md">
         <div class="flex items-center justify-center gap-1.5">
-          <button onclick="showDetailModal(${r.id})" class="p-1.5 rounded-lg bg-blue-900/40 hover:bg-blue-800 text-blue-300 transition" title="مشاهده کامل">
+          <button onclick="showDetailModal('${safeId}')" class="p-1.5 rounded-lg bg-blue-900/40 hover:bg-blue-800 text-blue-300 transition" title="مشاهده کامل">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
           </button>
-          <button onclick="confirmDeleteReport(${r.id})" class="p-1.5 rounded-lg bg-red-950/50 hover:bg-red-900 text-red-400 transition" title="حذف رکورد">
+          <button onclick="confirmDeleteReport('${safeId}')" class="p-1.5 rounded-lg bg-red-950/50 hover:bg-red-900 text-red-400 transition" title="حذف رکورد">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
           </button>
         </div>
@@ -5621,7 +5612,7 @@ function renderReportsTable(list) {
 }
 
 function showDetailModal(id) {
-  const record = (window.AppState.allReports || []).find((r) => r.id === id);
+  const record = (window.AppState.allReports || []).find((r) => String(r.id) === String(id));
   if (!record) return;
 
   const content = document.getElementById('reportDetailContent');
@@ -6035,16 +6026,24 @@ async function handleRestoreFile(e) {
       }
 
       if (parsed.data.operator) {
-        localStorage.setItem('automation_operator_profile', JSON.stringify(parsed.data.operator));
+        const c = getCloudDB();
+        const st = getCloudState();
+        if (st.signedIn && c && typeof c.saveUserOperatorProfile === 'function') {
+          await c.saveUserOperatorProfile(parsed.data.operator);
+        }
+        window.AppState.operator = parsed.data.operator;
         loadOperatorProfile();
       }
 
-      if (Array.isArray(parsed.data.supervisions)) {
-        saveStoredSupervisions(parsed.data.supervisions);
-      }
-
-      if (Array.isArray(parsed.data.units)) {
-        saveStoredUnits(parsed.data.units);
+      if (Array.isArray(parsed.data.supervisions) || Array.isArray(parsed.data.units)) {
+        const c = getCloudDB();
+        if (c && typeof c.saveOrgStructure === 'function') {
+          await c.saveOrgStructure({
+            version: ORG_STRUCTURE_VERSION,
+            supervisions: Array.isArray(parsed.data.supervisions) ? parsed.data.supervisions : getStoredSupervisions(),
+            units: Array.isArray(parsed.data.units) ? parsed.data.units : getStoredUnits()
+          });
+        }
       }
 
       if (Array.isArray(parsed.data.assetRebuildables)) {
@@ -6052,7 +6051,7 @@ async function handleRestoreFile(e) {
         window.AppState.assetRecords = parsed.data.assetRebuildables;
       }
 
-      showToast(`بازنشانی با موفقیت انجام شد: ${parsed.data.graphs.length} رکورد بازیابی گردید.`, 'success');
+      showToast(`بازنشانی با موفقیت روی سرور مرکزی انجام شد: ${parsed.data.graphs.length} رکورد بازیابی گردید.`, 'success');
       loadAdminReports();
       loadAdminUsersList();
       renderOrgManagementUI();
@@ -6337,7 +6336,8 @@ async function handleCreateNewAdmin(e) {
   }
   const fullName = document.getElementById('newAdminFullName').value.trim();
   const username = document.getElementById('newAdminUsername').value.trim().toLowerCase();
-  const password = document.getElementById('newAdminPassword').value.trim();
+  const firebaseUid = (document.getElementById('newAdminFirebaseUid')?.value || '').trim();
+  const email = (document.getElementById('newAdminEmail')?.value || '').trim().toLowerCase();
   const unit = document.getElementById('newAdminUnit').value.trim();
   const supervision = document.getElementById('newAdminSupervision').value.trim();
 
@@ -6348,8 +6348,8 @@ async function handleCreateNewAdmin(e) {
   const permPersonnelManage = document.getElementById('permPersonnelManage')?.checked || false;
   const permAssetRebuildable = document.getElementById('permAssetRebuildable')?.checked || false;
 
-  if (!username || !password) {
-    showToast('نام کاربری و رمز عبور الزامی است', 'error');
+  if (!username) {
+    showToast('نام کاربری الزامی است', 'error');
     return;
   }
   if (username === 'admin' || username === '417734' || username === '417737') {
@@ -6358,31 +6358,32 @@ async function handleCreateNewAdmin(e) {
   }
 
   const newAdmin = {
+    uid: firebaseUid || `pending_${username.replace(/[^a-z0-9_\-]/g, '_')}`,
+    email,
     fullName: fullName || username,
     username,
-    password,
     unit: unit || 'همه واحدها',
     supervision: supervision || 'همه سرپرستی‌ها',
+    isSuperAdmin: false,
     permissions: {
       orgManage: permOrgManage,
       adminManage: permAdminManage,
       backup: permBackup,
       personnelManage: permPersonnelManage,
       assetRebuildable: permAssetRebuildable
-    },
-    createdAt: new Date().toISOString()
+    }
   };
 
   try {
     await saveAdminUser(newAdmin);
-    showToast(`مدیر جدید با نام کاربری «${username}» و دسترسی‌های تعیین‌شده با موفقیت ثبت شد`, 'success');
+    showToast(`مدیر جدید «${newAdmin.fullName}» در پایگاه داده مرکزی ثبت شد.${firebaseUid ? '' : ' (توجه: برای دسترسی مرکزی مدیر، شناسه Firebase UID او را ثبت کنید)'}`, 'success');
     document.getElementById('newAdminForm').reset();
     populateOrgDropdowns();
     updateNewAdminScopeHint();
     loadAdminUsersList();
   } catch (err) {
     console.error('Admin create error', err);
-    showToast('خطا در ذخیره‌سازی مدیر جدید', 'error');
+    showToast('خطا در ذخیره‌سازی مدیر جدید روی سرور مرکزی', 'error');
   }
 }
 
@@ -6478,12 +6479,16 @@ async function openEditAdminModal(username) {
     // ۱. پر کردن مشخصات اولیه مدیر با حفظ تنظیمات قبلی
     const fullNameInp = document.getElementById('editAdminFullName');
     const userInp = document.getElementById('editAdminUsername');
+    const uidInp = document.getElementById('editAdminFirebaseUid');
+    const emailInp = document.getElementById('editAdminEmail');
     const passInp = document.getElementById('editAdminPassword');
     const supSelect = document.getElementById('editAdminSupervision');
 
     if (fullNameInp) fullNameInp.value = admin.fullName || admin.username;
     if (userInp) userInp.value = admin.username;
-    if (passInp) passInp.value = ''; // رمز خالی یعنی حفظ رمز فعلی مدیر
+    if (uidInp) uidInp.value = admin.uid || '';
+    if (emailInp) emailInp.value = admin.email || '';
+    if (passInp) passInp.value = '';
 
     // ۲. پر کردن لیست سرپرستی‌ها و انتخاب مقدار قبلی
     const supervisions = getStoredSupervisions();
@@ -6627,7 +6632,7 @@ async function handleEditAdminSubmit(e) {
   }
   const username = document.getElementById('editAdminUsername')?.value.trim().toLowerCase();
   const fullName = document.getElementById('editAdminFullName')?.value.trim();
-  const newPassword = document.getElementById('editAdminPassword')?.value.trim();
+  const email = (document.getElementById('editAdminEmail')?.value || '').trim().toLowerCase();
   const supervision = document.getElementById('editAdminSupervision')?.value.trim();
   const unit = document.getElementById('editAdminUnit')?.value.trim();
 
@@ -6650,11 +6655,9 @@ async function handleEditAdminSubmit(e) {
       return;
     }
 
-    // بروزرسانی مشخصات با حفظ تنظیمات و مقادیر قبلی
+    // بروزرسانی مشخصات با حفظ تنظیمات و مقادیر قبلی (بدون ذخیره رمز عبور در دیتابیس مرکزی)
     existing.fullName = fullName || existing.fullName || username;
-    if (newPassword) {
-      existing.password = newPassword; // فقط در صورت وارد کردن مقدار جدید تغییر می‌کند
-    }
+    if (email !== undefined) existing.email = email;
     existing.supervision = supervision || existing.supervision || 'همه سرپرستی‌ها';
     existing.unit = unit || existing.unit || 'همه واحدها';
     existing.permissions = {
@@ -6664,7 +6667,6 @@ async function handleEditAdminSubmit(e) {
       backup: permBackup,
       assetRebuildable: permAsset
     };
-    existing.updatedAt = new Date().toISOString();
 
     await saveAdminUser(existing);
 
@@ -6735,59 +6737,57 @@ var DEFAULT_UNITS = [
 
 function getStoredSupervisions() {
   try {
-    const ver = localStorage.getItem('automation_org_version');
-    if (ver !== ORG_STRUCTURE_VERSION) {
-      localStorage.setItem('automation_org_version', ORG_STRUCTURE_VERSION);
-      localStorage.setItem('automation_supervisions', JSON.stringify(DEFAULT_SUPERVISIONS));
-      localStorage.setItem('automation_units', JSON.stringify(DEFAULT_UNITS));
-      return [...DEFAULT_SUPERVISIONS];
-    }
-    const raw = localStorage.getItem('automation_supervisions');
-    if (raw !== null) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    const c = getCloudDB();
+    const org = c && typeof c.getOrgStructure === 'function' ? c.getOrgStructure() : null;
+    if (org && Array.isArray(org.supervisions) && org.supervisions.length > 0) {
+      return [...org.supervisions];
     }
   } catch (e) {
-    console.error('Error reading supervisions', e);
+    console.error('Error reading cloud supervisions', e);
   }
   return [...DEFAULT_SUPERVISIONS];
 }
 
-function saveStoredSupervisions(list) {
-  localStorage.setItem('automation_supervisions', JSON.stringify(list));
+async function saveStoredSupervisions(list) {
+  const c = getCloudDB();
+  if (c && typeof c.saveOrgStructure === 'function') {
+    await c.saveOrgStructure({
+      version: ORG_STRUCTURE_VERSION,
+      supervisions: list,
+      units: getStoredUnits(),
+    });
+  }
   populateOrgDropdowns();
   renderOrgManagementUI();
 }
 
 function getStoredUnits() {
   try {
-    const ver = localStorage.getItem('automation_org_version');
-    if (ver !== ORG_STRUCTURE_VERSION) {
-      localStorage.setItem('automation_org_version', ORG_STRUCTURE_VERSION);
-      localStorage.setItem('automation_supervisions', JSON.stringify(DEFAULT_SUPERVISIONS));
-      localStorage.setItem('automation_units', JSON.stringify(DEFAULT_UNITS));
-      return [...DEFAULT_UNITS];
-    }
-    const raw = localStorage.getItem('automation_units');
-    if (raw !== null) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.map((u) => (typeof u === 'string' ? { name: u, supervision: '' } : u));
-      }
+    const c = getCloudDB();
+    const org = c && typeof c.getOrgStructure === 'function' ? c.getOrgStructure() : null;
+    if (org && Array.isArray(org.units) && org.units.length > 0) {
+      return org.units.map((u) => (typeof u === 'string' ? { name: u, supervision: '' } : { ...u }));
     }
   } catch (e) {
-    console.error('Error reading units', e);
+    console.error('Error reading cloud units', e);
   }
   return [...DEFAULT_UNITS];
 }
 
-function saveStoredUnits(list) {
-  localStorage.setItem('automation_units', JSON.stringify(list));
+async function saveStoredUnits(list) {
+  const c = getCloudDB();
+  if (c && typeof c.saveOrgStructure === 'function') {
+    await c.saveOrgStructure({
+      version: ORG_STRUCTURE_VERSION,
+      supervisions: getStoredSupervisions(),
+      units: list,
+    });
+  }
   populateOrgDropdowns();
   renderOrgManagementUI();
 }
 
-function handleCreateSupervision(e) {
+async function handleCreateSupervision(e) {
   if (e) e.preventDefault();
   if (!canAccessOrgManage()) {
     showToast('دسترسی غیرمجاز: تنها کاربر admin یا مدیران مجاز امکان تعریف سرپرستی‌ها و واحدها را دارند', 'error');
@@ -6805,12 +6805,17 @@ function handleCreateSupervision(e) {
     return;
   }
   current.push(name);
-  saveStoredSupervisions(current);
-  if (input) input.value = '';
-  showToast(`سرپرستی «${name}» با موفقیت اضافه شد`, 'success');
+  try {
+    await saveStoredSupervisions(current);
+    if (input) input.value = '';
+    showToast(`سرپرستی «${name}» با موفقیت روی سرور مرکزی اضافه شد`, 'success');
+  } catch (err) {
+    console.error('Error saving supervision:', err);
+    showToast('خطا در ذخیره سرپرستی در پایگاه داده مرکزی', 'error');
+  }
 }
 
-function handleDeleteSupervision(index) {
+async function handleDeleteSupervision(index) {
   if (!canAccessOrgManage()) {
     showToast('دسترسی غیرمجاز: شما مجوز حذف سرپرستی‌ها را ندارید', 'error');
     return;
@@ -6820,12 +6825,17 @@ function handleDeleteSupervision(index) {
   if (!item) return;
   if (confirm(`آیا از حذف سرپرستی «${item}» اطمینان دارید؟`)) {
     current.splice(index, 1);
-    saveStoredSupervisions(current);
-    showToast(`سرپرستی «${item}» حذف گردید`, 'info');
+    try {
+      await saveStoredSupervisions(current);
+      showToast(`سرپرستی «${item}» حذف گردید`, 'info');
+    } catch (err) {
+      console.error('Error deleting supervision:', err);
+      showToast('خطا در حذف سرپرستی از سرور مرکزی', 'error');
+    }
   }
 }
 
-function handleEditSupervision(index) {
+async function handleEditSupervision(index) {
   if (!canAccessOrgManage()) {
     showToast('دسترسی غیرمجاز: شما مجوز ویرایش سرپرستی‌ها را ندارید', 'error');
     return;
@@ -6841,13 +6851,26 @@ function handleEditSupervision(index) {
     units.forEach((u) => {
       if (u.supervision === item) u.supervision = cleanName;
     });
-    localStorage.setItem('automation_units', JSON.stringify(units));
-    saveStoredSupervisions(current);
-    showToast('عنوان سرپرستی با موفقیت ویرایش شد', 'success');
+    try {
+      const c = getCloudDB();
+      if (c && typeof c.saveOrgStructure === 'function') {
+        await c.saveOrgStructure({
+          version: ORG_STRUCTURE_VERSION,
+          supervisions: current,
+          units,
+        });
+      }
+      populateOrgDropdowns();
+      renderOrgManagementUI();
+      showToast('عنوان سرپرستی با موفقیت روی سرور مرکزی ویرایش شد', 'success');
+    } catch (err) {
+      console.error('Error editing supervision:', err);
+      showToast('خطا در ویرایش سرپرستی', 'error');
+    }
   }
 }
 
-function handleCreateUnit(e) {
+async function handleCreateUnit(e) {
   if (e) e.preventDefault();
   if (!canAccessOrgManage()) {
     showToast('دسترسی غیرمجاز: تنها کاربر admin یا مدیران مجاز امکان تعریف واحدها را دارند', 'error');
@@ -6868,12 +6891,17 @@ function handleCreateUnit(e) {
     return;
   }
   current.push({ name, supervision });
-  saveStoredUnits(current);
-  if (input) input.value = '';
-  showToast(`واحد سازمانی «${name}» با موفقیت افزوده شد`, 'success');
+  try {
+    await saveStoredUnits(current);
+    if (input) input.value = '';
+    showToast(`واحد سازمانی «${name}» با موفقیت روی سرور مرکزی افزوده شد`, 'success');
+  } catch (err) {
+    console.error('Error creating unit:', err);
+    showToast('خطا در ثبت واحد در پایگاه داده مرکزی', 'error');
+  }
 }
 
-function handleDeleteUnit(index) {
+async function handleDeleteUnit(index) {
   if (!canAccessOrgManage()) {
     showToast('دسترسی غیرمجاز: شما مجوز حذف واحدها را ندارید', 'error');
     return;
@@ -6883,12 +6911,17 @@ function handleDeleteUnit(index) {
   if (!item) return;
   if (confirm(`آیا از حذف واحد «${item.name}» اطمینان دارید؟`)) {
     current.splice(index, 1);
-    saveStoredUnits(current);
-    showToast(`واحد «${item.name}» حذف گردید`, 'info');
+    try {
+      await saveStoredUnits(current);
+      showToast(`واحد «${item.name}» حذف گردید`, 'info');
+    } catch (err) {
+      console.error('Error deleting unit:', err);
+      showToast('خطا در حذف واحد از سرور مرکزی', 'error');
+    }
   }
 }
 
-function handleEditUnit(index) {
+async function handleEditUnit(index) {
   if (!canAccessOrgManage()) {
     showToast('دسترسی غیرمجاز: شما مجوز ویرایش واحدها را ندارید', 'error');
     return;
@@ -6899,21 +6932,38 @@ function handleEditUnit(index) {
   const newName = prompt('عنوان جدید واحد سازمانی را وارد نمایید:', item.name);
   if (newName && newName.trim() && newName.trim() !== item.name) {
     current[index].name = newName.trim();
-    saveStoredUnits(current);
-    showToast('عنوان واحد با موفقیت ویرایش شد', 'success');
+    try {
+      await saveStoredUnits(current);
+      showToast('عنوان واحد با موفقیت روی سرور مرکزی ویرایش شد', 'success');
+    } catch (err) {
+      console.error('Error editing unit:', err);
+      showToast('خطا در ویرایش واحد', 'error');
+    }
   }
 }
 
-function resetOrgStructureToDefault() {
+async function resetOrgStructureToDefault() {
   if (!canAccessOrgManage()) {
     showToast('دسترسی غیرمجاز: شما مجوز بازنشانی ساختار سازمانی را ندارید', 'error');
     return;
   }
-  if (confirm('آیا از بازنشانی سرپرستی‌ها و واحدها به مقادیر پیش‌فرض اطمینان دارید؟')) {
-    localStorage.setItem('automation_org_version', ORG_STRUCTURE_VERSION);
-    saveStoredSupervisions([...DEFAULT_SUPERVISIONS]);
-    saveStoredUnits([...DEFAULT_UNITS]);
-    showToast('ساختار سازمانی به حالت پیش‌فرض بازنشانی شد', 'success');
+  if (confirm('آیا از بازنشانی سرپرستی‌ها و واحدها به مقادیر پیش‌فرض روی سرور مرکزی اطمینان دارید؟')) {
+    try {
+      const c = getCloudDB();
+      if (c && typeof c.saveOrgStructure === 'function') {
+        await c.saveOrgStructure({
+          version: ORG_STRUCTURE_VERSION,
+          supervisions: [...DEFAULT_SUPERVISIONS],
+          units: [...DEFAULT_UNITS],
+        });
+      }
+      populateOrgDropdowns();
+      renderOrgManagementUI();
+      showToast('ساختار سازمانی روی سرور مرکزی به حالت پیش‌فرض بازنشانی شد', 'success');
+    } catch (err) {
+      console.error('Error resetting org structure:', err);
+      showToast('خطا در بازنشانی ساختار سازمانی', 'error');
+    }
   }
 }
 
@@ -7493,6 +7543,7 @@ function setupPWAInstall() {
 // ==========================================
 document.addEventListener('DOMContentLoaded', () => {
   initThemeUI();
+  updateCloudAuthUI();
   loadOperatorProfile();
   loadPersonnelData();
   populateOrgDropdowns();
@@ -7810,15 +7861,19 @@ async function handleNewPersonnelSubmit(e) {
   renderPersonnelTable();
   showToast(`پرسنل «${name}» با شماره ${code} با موفقیت ثبت شد`, 'success');
 
-  // ۳. ذخیره در IndexedDB در پس‌زمینه
-  try {
-    await savePersonnelRecordToDB(newRecord);
-  } catch (dbErr) {
-    console.warn('Background save new personnel error:', dbErr);
+  // ۳. ذخیره تغییر پرسنل در پایگاه داده مرکزی
+  const c = getCloudDB();
+  if (c && typeof c.savePersonnelOverride === 'function') {
+    try {
+      await c.savePersonnelOverride(newRecord, 'upsert');
+    } catch (dbErr) {
+      console.warn('Cloud save new personnel error:', dbErr);
+      showToast('خطا در ذخیره پرسنل جدید روی سرور مرکزی', 'error');
+    }
   }
 }
 
-function editPersonnelRecord(code) {
+async function editPersonnelRecord(code) {
   if (!code) return;
   const cleanCode = String(code).trim();
   const p = (window.AppState.personnelMap && window.AppState.personnelMap.get(cleanCode)) ||
@@ -7838,8 +7893,16 @@ function editPersonnelRecord(code) {
     window.AppState.personnelMap.set(cleanCode, p);
   }
   renderPersonnelTable();
-  showToast(`نام پرسنل با موفقیت به «${trimmed}» به‌روزرسانی شد`, 'success');
-  savePersonnelRecordToDB(p).catch((e) => console.warn(e));
+  const c = getCloudDB();
+  if (c && typeof c.savePersonnelOverride === 'function') {
+    try {
+      await c.savePersonnelOverride(p, 'upsert');
+      showToast(`نام پرسنل با موفقیت در سرور مرکزی به «${trimmed}» به‌روزرسانی شد`, 'success');
+    } catch (e) {
+      console.warn(e);
+      showToast('خطا در ذخیره‌سازی تغییر پرسنل روی سرور مرکزی', 'error');
+    }
+  }
 }
 
 async function confirmDeletePersonnel(code) {
@@ -7865,18 +7928,22 @@ async function confirmDeletePersonnel(code) {
 
   // ۲. رندر مجدد جدول و نمایش پیام به کاربر
   renderPersonnelTable();
-  showToast(`پرسنل «${name}» (${cleanCode}) با موفقیت حذف گردید`, 'info');
+  showToast(`پرسنل «${name}» (${cleanCode}) از لیست حذف گردید`, 'info');
 
-  // ۳. حذف پایدار در پس‌زمینه از دیتابیس
-  try {
-    await deletePersonnelFromDB(cleanCode);
-  } catch (dbErr) {
-    console.warn('Background delete personnel error:', dbErr);
+  // ۳. ثبت حذف در پایگاه داده مرکزی
+  const c = getCloudDB();
+  if (c && typeof c.savePersonnelOverride === 'function') {
+    try {
+      await c.savePersonnelOverride({ code: cleanCode, name }, 'delete');
+    } catch (dbErr) {
+      console.warn('Cloud delete personnel error:', dbErr);
+      showToast('خطا در ثبت حذف پرسنل روی سرور مرکزی', 'error');
+    }
   }
 }
 
 async function confirmResetPersonnelData() {
-  if (!confirm('آیا از بازنشانی کامل اطلاعات پرسنل به فایل اولیه اکسل (۷,۵۲۷ رکورد) اطمینان دارید؟ هرگونه تغییر دستی بازنشانی خواهد شد.')) {
+  if (!confirm('آیا از بازنشانی کامل اطلاعات پرسنل به فایل اولیه اکسل (۷,۵۲۷ رکورد) روی سرور مرکزی اطمینان دارید؟ هرگونه تغییر دستی بازنشانی خواهد شد.')) {
     return;
   }
   try {
@@ -7885,8 +7952,10 @@ async function confirmResetPersonnelData() {
       const res = await fetch('/personnel-data.json');
       sourceData = await res.json();
     }
-    await clearPersonnelDB();
-    saveMultiplePersonnelToDB(sourceData).catch(() => {});
+    const c = getCloudDB();
+    if (c && typeof c.resetPersonnelOverrides === 'function') {
+      await c.resetPersonnelOverrides();
+    }
     window.AppState.personnel = [...sourceData];
     initPersonnelState(window.AppState.personnel);
     window.AppState.personnelCurrentPage = 1;
@@ -7943,13 +8012,13 @@ function showAdminTab(tabName) {
       if (session) user = JSON.parse(session);
     } catch (e) {}
   }
-  const isSuper = !user || user.username === 'admin' || user.username === '417734' || user.username === '417737' || user.isSuperAdmin;
+  const isSuper = isMasterAdmin(user);
 
   const canOrg = isSuper || !!(user && user.permissions && user.permissions.orgManage);
   const canAdmin = isSuper || !!(user && user.permissions && user.permissions.adminManage);
   const canBackup = isSuper || !!(user && user.permissions && user.permissions.backup);
   const canPersonnel = isSuper || !!(user && user.permissions && user.permissions.personnelManage);
-  const canAssetRebuildable = isSuper || (user && user.permissions ? user.permissions.assetRebuildable !== false : true);
+  const canAssetRebuildable = isSuper || (user && user.permissions ? user.permissions.assetRebuildable !== false : false);
 
   if (tabName === 'orgManage' && !canOrg) tabName = 'reports';
   if (tabName === 'adminManage' && !canAdmin) tabName = 'reports';
@@ -8023,7 +8092,7 @@ function getUserAssetScope() {
       if (session) user = JSON.parse(session);
     } catch (e) {}
   }
-  const isSuper = !user || user.username === 'admin' || user.username === '417734' || user.username === '417737' || user.isSuperAdmin;
+  const isSuper = isMasterAdmin(user);
   const userSup = user && user.supervision ? user.supervision.trim() : '';
   const userUnit = user && user.unit ? user.unit.trim() : '';
 
@@ -8054,26 +8123,11 @@ function canUserAccessAssetRecord(record, scope) {
   return true;
 }
 
-async function initAssetRebuildables() {
-  let records = await getAllAssetRebuildableRecordsFromDB();
-  const defaultRebuildables = [
-    'کارت پردازنده اصلی CPU 414-4H',
-    'ماژول ورودی/خروجی آنالوگ AI 8x13Bit',
-    'پوزیشنر هوشمند Fisher DVC6200',
-    'اکچویتور پنوماتیک دیافراگمی 657',
-    'فرستنده-گیرنده UHF تله‌متری',
-    'پاور ماژولار ریداندنت 12V 450W'
-  ];
-  if (records && records.length > 0) {
-    const toDelete = records.filter(r => defaultRebuildables.includes((r.rebuildable || '').trim()));
-    if (toDelete.length > 0) {
-      for (const r of toDelete) {
-        if (r.id) await deleteAssetRebuildableRecordFromDB(r.id);
-      }
-      records = records.filter(r => !defaultRebuildables.includes((r.rebuildable || '').trim()));
-      localStorage.setItem('automation_asset_rebuildables', JSON.stringify(records));
-    }
-  }
+async function initAssetRebuildables(skipFetch = false) {
+  const st = getCloudState();
+  let records = (skipFetch && st.assets && st.assets.length > 0)
+    ? [...st.assets]
+    : await getAllAssetRebuildableRecordsFromDB();
   records = await ensureDefaultAssetRebuildables(records);
   window.AppState.assetRecords = records || [];
   await populateAsettDatalist();
@@ -8124,7 +8178,10 @@ function populateAssetFilterDropdowns(scope) {
     const supervisions = getStoredSupervisions();
     let optionsHtml = '<option value="همه">همه سرپرستی‌ها</option>';
     supervisions.forEach(s => {
-      optionsHtml += `<option value="${escapeHtml(s.title)}">${escapeHtml(s.title)}</option>`;
+      const sName = (typeof s === 'object' && s !== null) ? (s.name || s.title || '') : String(s);
+      if (sName) {
+        optionsHtml += `<option value="${escapeHtml(sName)}">${escapeHtml(sName)}</option>`;
+      }
     });
     supSelect.innerHTML = optionsHtml;
   }
@@ -8182,8 +8239,8 @@ function clearAssetSearch() {
   onAssetSearchInput('');
 }
 
-async function renderAssetRebuildableUI() {
-  await initAssetRebuildables();
+async function renderAssetRebuildableUI(skipFetch = false) {
+  await initAssetRebuildables(skipFetch);
   const scope = getUserAssetScope();
   updateAssetScopeUI(scope);
   populateAssetFilterDropdowns(scope);
@@ -8314,10 +8371,10 @@ function renderAssetRebuildableTable(list, scope) {
         <td class="py-3 px-3 text-center">
           ${isUserAllowedToMutate ? `
             <div class="inline-flex items-center gap-1">
-              <button type="button" onclick="openEditAssetModal(${r.id})" class="p-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 transition" title="ویرایش رکورد">
+              <button type="button" onclick="openEditAssetModal('${escapeHtml(String(r.id))}')" class="p-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 transition" title="ویرایش رکورد">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
               </button>
-              <button type="button" onclick="confirmDeleteAssetRecord(${r.id})" class="p-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30 transition" title="حذف رکورد">
+              <button type="button" onclick="confirmDeleteAssetRecord('${escapeHtml(String(r.id))}')" class="p-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30 transition" title="حذف رکورد">
                 <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
               </button>
             </div>
@@ -8542,17 +8599,22 @@ async function handleNewAssetRebuildableSubmit(e) {
     return;
   }
 
-  await saveMultipleAssetRebuildablesToDB(recordsToSave);
-  showToast(`تعداد ${recordsToSave.length} قطعه قابل بازسازی برای تجهیز «${assetName}» با موفقیت ذخیره شد`, 'success');
-  closeModal('assetAddModal');
-  await populateAsettDatalist();
-  syncRebuildablesForAsett();
-  renderAssetRebuildableUI();
+  try {
+    await saveMultipleAssetRebuildablesToDB(recordsToSave);
+    showToast(`تعداد ${recordsToSave.length} قطعه قابل بازسازی برای تجهیز «${assetName}» روی سرور مرکزی ذخیره شد`, 'success');
+    closeModal('assetAddModal');
+    await populateAsettDatalist();
+    syncRebuildablesForAsett();
+    renderAssetRebuildableUI(true);
+  } catch (err) {
+    console.error('Error saving asset rebuildables:', err);
+    showToast('خطا در ذخیره‌سازی قطعات روی سرور مرکزی. دسترسی خود را بررسی نمایید.', 'error');
+  }
 }
 
 function openEditAssetModal(id) {
   const scope = getUserAssetScope();
-  const record = (window.AppState.assetRecords || []).find(r => r.id === id);
+  const record = (window.AppState.assetRecords || []).find(r => String(r.id) === String(id));
   if (!record) {
     showToast('رکورد مورد نظر یافت نشد', 'error');
     return;
@@ -8626,10 +8688,10 @@ function onEditAssetSupervisionChange() {
 
 async function handleEditAssetSubmit(e) {
   e.preventDefault();
-  const id = Number(document.getElementById('editAssetId').value);
+  const id = String(document.getElementById('editAssetId').value || '').trim();
   const scope = getUserAssetScope();
 
-  const record = (window.AppState.assetRecords || []).find(r => r.id === id);
+  const record = (window.AppState.assetRecords || []).find(r => String(r.id) === id);
   if (!record || !canUserAccessAssetRecord(record, scope)) {
     showToast('شما مجاز به ویرایش این رکورد نیستید', 'error');
     return;
@@ -8645,17 +8707,23 @@ async function handleEditAssetSubmit(e) {
   if (scope.isGlobalSup && supSelect) record.supervision = supSelect.value.trim();
   if (scope.isGlobalUnit && unitSelect) record.unit = unitSelect.value.trim();
 
-  await saveAssetRebuildableRecordToDB(record);
-  showToast('رکورد با موفقیت به‌روزرسانی شد', 'success');
-  closeModal('assetEditModal');
-  await populateAsettDatalist();
-  syncRebuildablesForAsett();
-  renderAssetRebuildableUI();
+  try {
+    await saveAssetRebuildableRecordToDB(record);
+    showToast('رکورد با موفقیت روی سرور مرکزی به‌روزرسانی شد', 'success');
+    closeModal('assetEditModal');
+    await populateAsettDatalist();
+    syncRebuildablesForAsett();
+    renderAssetRebuildableUI(true);
+  } catch (err) {
+    console.error('Error updating asset:', err);
+    showToast('خطا در به‌روزرسانی رکورد روی سرور مرکزی', 'error');
+  }
 }
 
 async function confirmDeleteAssetRecord(id) {
   const scope = getUserAssetScope();
-  const record = (window.AppState.assetRecords || []).find(r => r.id === id);
+  const targetId = String(id || '').trim();
+  const record = (window.AppState.assetRecords || []).find(r => String(r.id) === targetId);
   if (!record) return;
 
   if (!canUserAccessAssetRecord(record, scope)) {
@@ -8666,12 +8734,17 @@ async function confirmDeleteAssetRecord(id) {
   const msg = `آیا از حذف قطعه بازسازی «${record.rebuildable}» متعلق به تجهیز «${record.asset}» اطمینان دارید؟`;
   if (!confirm(msg)) return;
 
-  await deleteAssetRebuildableRecordFromDB(id);
-  window.AppState.assetRecords = (window.AppState.assetRecords || []).filter(r => r.id !== id);
-  showToast('رکورد با موفقیت حذف گردید', 'success');
-  await populateAsettDatalist();
-  syncRebuildablesForAsett();
-  applyAssetFiltersAndRender();
+  try {
+    await deleteAssetRebuildableRecordFromDB(targetId);
+    window.AppState.assetRecords = (window.AppState.assetRecords || []).filter(r => String(r.id) !== targetId);
+    showToast('رکورد با موفقیت از سرور مرکزی حذف گردید', 'success');
+    await populateAsettDatalist();
+    syncRebuildablesForAsett();
+    applyAssetFiltersAndRender();
+  } catch (err) {
+    console.error('Error deleting asset:', err);
+    showToast('خطا در حذف رکورد از سرور مرکزی', 'error');
+  }
 }
 
 // ==========================================
@@ -9018,5 +9091,13 @@ window.checkAppUpdate = checkAppUpdate;
 window.applyAppUpdate = applyAppUpdate;
 window.dismissAppUpdate = dismissAppUpdate;
 window.APP_VERSION = APP_VERSION;
+
+// توابع ارتباط با پایگاه داده مرکزی و احراز هویت گوگل
+window.handleCloudGoogleSignIn = handleCloudGoogleSignIn;
+window.handleCloudGoogleSignOut = handleCloudGoogleSignOut;
+window.handleCloudAuthAction = handleCloudAuthAction;
+window.copyMyCloudUid = copyMyCloudUid;
+window.loginAdminWithVerifiedGoogle = loginAdminWithVerifiedGoogle;
+window.updateCloudAuthUI = updateCloudAuthUI;
 
 

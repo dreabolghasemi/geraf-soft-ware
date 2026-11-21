@@ -1,0 +1,412 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated user active operator profile (PII isolated to owner or admin).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "personnelId": {
+          "type": "string",
+          "maxLength": 32,
+          "pattern": "^[0-9]{1,20}$"
+        },
+        "firstName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "lastName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "fatherName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "management": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "supervision": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "unit": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "role": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "personnelId", "name", "createdAt", "updatedAt"]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Authorized system administrator or delegated unit supervisor record (keyed by Firebase UID or sub-admin slug, no plaintext passwords).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 160
+        },
+        "username": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fullName": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "supervision": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "unit": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "isSuperAdmin": {
+          "type": "boolean"
+        },
+        "permissions": {
+          "type": "object",
+          "description": "Module permission flags: orgManage, adminManage, backup, personnelManage, assetRebuildable"
+        },
+        "createdByUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "username", "fullName", "supervision", "unit", "permissions", "createdByUid", "createdAt", "updatedAt"]
+    },
+    "OrgStructure": {
+      "title": "OrgStructure",
+      "description": "Centralized organization supervisions, units, and active admin UID registry.",
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "supervisions": {
+          "type": "array",
+          "description": "Bounded list of supervision names (max 100)"
+        },
+        "units": {
+          "type": "array",
+          "description": "Bounded list of { name, supervision } unit definitions (max 250)"
+        },
+        "adminUids": {
+          "type": "array",
+          "description": "Bounded list of authorized sub-admin Firebase UIDs (max 20)"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["version", "supervisions", "units", "adminUids", "updatedByUid", "createdAt", "updatedAt"]
+    },
+    "AssetCatalogShard": {
+      "title": "AssetCatalogShard",
+      "description": "Sharded centralized ASETT & Rebuildable equipment catalog document (max 500 items per shard).",
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "description": "Bounded array of equipment & rebuildable entries (max 500 per shard)"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["items", "count", "updatedByUid", "createdAt", "updatedAt"]
+    },
+    "ActivityGraph": {
+      "title": "ActivityGraph",
+      "description": "Centralized field activity / graph log record submitted by an authenticated operator.",
+      "type": "object",
+      "properties": {
+        "authorUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorizedUids": {
+          "type": "array",
+          "description": "Bounded list of delegated admin UIDs permitted to review this record (max 20)"
+        },
+        "timestamp": {
+          "type": "number"
+        },
+        "jalaliDate": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "jalaliTime": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "jalaliFull": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "operator": {
+          "type": "object",
+          "description": "Operator snapshot without nationalId/mobile PII"
+        },
+        "asett": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "rebuildable": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "photos": {
+          "type": "array",
+          "description": "Bounded array of watermarked compressed JPEG data URLs (max 5 items)"
+        },
+        "reportNotes": {
+          "type": "string",
+          "maxLength": 2000
+        },
+        "activityType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "activities": {
+          "type": "array",
+          "description": "Bounded array of activity items (max 30)"
+        },
+        "conditionalFields": {
+          "type": "object",
+          "description": "Conditional activity metadata: footage, equipmentId, deviceTag, referenceTool"
+        },
+        "colleagues": {
+          "type": "array",
+          "description": "Bounded array of accompanying colleagues (max 20)"
+        },
+        "location": {
+          "type": "object",
+          "description": "GPS coordinates: lat, lng, accuracy, timestamp, updatedAt"
+        },
+        "durationHours": {
+          "type": "integer"
+        },
+        "durationMinutes": {
+          "type": "integer"
+        },
+        "durationSeconds": {
+          "type": "integer"
+        },
+        "durationTotalSeconds": {
+          "type": "integer"
+        },
+        "durationFormatted": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "durationDigital": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "durationMethod": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "syncStatus": {
+          "type": "string",
+          "enum": ["synced", "pending"]
+        },
+        "syncedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "authorUid",
+        "authorizedUids",
+        "timestamp",
+        "jalaliDate",
+        "jalaliTime",
+        "jalaliFull",
+        "operator",
+        "asett",
+        "rebuildable",
+        "photos",
+        "reportNotes",
+        "activityType",
+        "activities",
+        "conditionalFields",
+        "colleagues",
+        "location",
+        "durationHours",
+        "durationMinutes",
+        "durationSeconds",
+        "durationTotalSeconds",
+        "durationFormatted",
+        "durationDigital",
+        "durationMethod",
+        "syncStatus",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PersonnelOverride": {
+      "title": "PersonnelOverride",
+      "description": "Admin-managed addition, modification, or deletion delta over the static personnel directory (PII protected).",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "maxLength": 32,
+          "pattern": "^[0-9]{1,20}$"
+        },
+        "action": {
+          "type": "string",
+          "enum": ["upsert", "delete"]
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "nationalId": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "mobile": {
+          "type": "string",
+          "maxLength": 24
+        },
+        "management": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "supervision": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "serviceUnit": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "jobTitle": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "updatedByUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["code", "action", "name", "updatedByUid", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Active operator profile isolated per Firebase Auth UID (owner or admin get only; no list)."
+    },
+    "/admins/{adminUid}": {
+      "schema": "AdminUser",
+      "description": "Admin role registry keyed by Firebase UID; master admin or self-read only."
+    },
+    "/org_structure/{docId}": {
+      "schema": "OrgStructure",
+      "description": "Singleton organization structure document ('main') readable by verified users, writable by admins."
+    },
+    "/org_catalog/{shardId}": {
+      "schema": "AssetCatalogShard",
+      "description": "Sharded ASETT & Rebuildable catalog documents (assets_0..assets_9) readable by verified users via get, writable by admins."
+    },
+    "/graphs/{graphId}": {
+      "schema": "ActivityGraph",
+      "description": "Centralized activity log documents; technicians list their own authorUid, admins list all/authorized records."
+    },
+    "/personnel_overrides/{personnelCode}": {
+      "schema": "PersonnelOverride",
+      "description": "Admin-only personnel catalog overrides containing PII."
+    }
+  }
+}
